@@ -19,6 +19,7 @@ mod index;
 mod manifest;
 mod parallel;
 mod run;
+mod sobol;
 mod sweep;
 mod trace;
 
@@ -138,7 +139,13 @@ enum Cmd {
         /// Latin-hypercube points (all parameters must be ranges).
         #[arg(long)]
         lhs: Option<usize>,
-        /// Seed for the Latin-hypercube design (the `Design` RNG stream).
+        /// Sobol' sensitivity analysis with N base samples (Saltelli design:
+        /// N * (k + 2) points; all parameters must be ranges). Writes
+        /// sobol_indices.csv.
+        #[arg(long)]
+        sobol: Option<usize>,
+        /// Seed for the Latin-hypercube design and the Sobol' bootstrap (the
+        /// `Design` RNG stream).
         #[arg(long, default_value_t = 1)]
         design_seed: u64,
         /// Seeds per point (comma separated, ranges like 1-10).
@@ -434,6 +441,7 @@ fn main() {
         Cmd::Sweep {
             params,
             lhs,
+            sobol,
             design_seed,
             seed,
             days,
@@ -460,6 +468,7 @@ fn main() {
                     sets,
                     params,
                     lhs,
+                    sobol,
                     design_seed,
                     seeds: parse_seed_list(&seed).unwrap_or_else(|e| fail(&e)),
                     days,

@@ -236,6 +236,140 @@ pub fn design_points(
     }
 }
 
+/// Saltelli points for a Sobol' sensitivity analysis: `n` rows of `k + 2`
+/// points (see `sobol::saltelli_unit`), every parameter a numeric range.
+/// Integer keys map the unit interval onto the integers in `[ceil(lo), floor(hi)]`.
+pub fn sobol_points(base: &Config, params: &[Param], n: usize) -> Result<Vec<Point>, String> {
+    if params.is_empty() {
+        return Err("provide at least one --param".into());
+    }
+    if n < 2 {
+        return Err("--sobol needs at least 2 base samples".into());
+    }
+    let k = params.len();
+    let total = n
+        .checked_mul(k + 2)
+        .filter(|&t| t <= MAX_RUNS)
+        .ok_or_else(|| format!("--sobol {n} with {k} parameters is more than {MAX_RUNS} points"))?;
+    let mut ranges = Vec::with_capacity(k);
+    let mut keys: Vec<&str> = Vec::new();
+    for p in params {
+        if keys.contains(&p.key()) {
+            return Err(format!("--param {} is given twice", p.key()));
+        }
+        keys.push(p.key());
+        let Param::Range { key, lo, hi } = p else {
+            return Err(format!(
+                "--param {}: a Sobol' analysis needs a numeric range (lo..hi)",
+                p.key()
+            ));
+        };
+        let kind = run::key_kind(base, key)?;
+        let (lo, hi) = match kind {
+            KeyKind::Float => (*lo, *hi),
+            KeyKind::Integer => {
+                let (a, b) = (lo.ceil(), hi.floor());
+                if a > b {
+                    return Err(format!("--param {key}: range {lo}..{hi} holds no integer"));
+                }
+                (a, b + 1.0)
+            }
+            _ => return Err(format!("--param {key}: only numeric keys can take a range")),
+        };
+        ranges.push((key.clone(), kind, lo, hi));
+    }
+    let unit = crate::sobol::saltelli_unit(n, k)?;
+    debug_assert_eq!(unit.len(), total);
+    Ok(unit
+        .iter()
+        .map(|u| {
+            ranges
+                .iter()
+                .zip(u)
+                .map(|((key, kind, lo, hi), &x)| {
+                    let v = lo + x * (hi - lo);
+                    let text = match kind {
+                        KeyKind::Integer => format!("{}", (v.floor() as i64).min(*hi as i64 - 1)),
+                        _ => format!("{}", v as f32),
+                    };
+                    (key.clone(), text)
+                })
+                .collect()
+        })
+        .collect())
+}
+
+/// `sobol_indices.csv`: per outcome and parameter, first-order and total
+/// Sobol' indices with 95 % bootstrap intervals, the output variance across
+/// points, and the share of it that is seed noise.
+pub fn sobol_csv(
+    params: &[Param],
+    n_seeds: usize,
+    results: &[(Vec<f64>, String)],
+    design_seed: u64,
+) -> String {
+    let k = params.len();
+    let mut s = String::from(
+        "outcome,param,s1,s1_ci95_low,s1_ci95_high,st,st_ci95_low,st_ci95_high,variance,noise_share,note\n",
+    );
+    let n_points = results.len() / n_seeds;
+    for (o, (name, _)) in OUTCOMES.iter().enumerate() {
+        let mut means = Vec::with_capacity(n_points);
+        let mut noise = 0.0f64;
+        let mut defined = true;
+        for p in 0..n_points {
+            let xs: Vec<f64> = results[p * n_seeds..(p + 1) * n_seeds]
+                .iter()
+                .map(|(v, _)| v[o])
+                .collect();
+            if xs.iter().any(|x| !x.is_finite()) {
+                defined = false;
+            }
+            let m = xs.iter().sum::<f64>() / xs.len() as f64;
+            if xs.len() > 1 {
+                let var =
+                    xs.iter().map(|x| (x - m) * (x - m)).sum::<f64>() / (xs.len() as f64 - 1.0);
+                noise += var / xs.len() as f64;
+            }
+            means.push(m);
+        }
+        let analysis = if defined {
+            crate::sobol::analyse(&means, k, 1000, design_seed)
+        } else {
+            Err("undefined at some point".into())
+        };
+        match analysis {
+            Ok(a) => {
+                let noise_share = if n_seeds > 1 && a.variance > 0.0 {
+                    (noise / n_points as f64 / a.variance).to_string()
+                } else {
+                    String::new()
+                };
+                for (p, ix) in params.iter().zip(&a.indices) {
+                    let _ = writeln!(
+                        s,
+                        "{name},{},{},{},{},{},{},{},{},{noise_share},",
+                        p.key(),
+                        ix.s1,
+                        ix.s1_ci.0,
+                        ix.s1_ci.1,
+                        ix.st,
+                        ix.st_ci.0,
+                        ix.st_ci.1,
+                        a.variance
+                    );
+                }
+            }
+            Err(e) => {
+                for p in params {
+                    let _ = writeln!(s, "{name},{},,,,,,,,,{}", p.key(), e.replace(',', ";"));
+                }
+            }
+        }
+    }
+    s
+}
+
 /// The config for a point, or why it is invalid.
 pub fn point_config(base: &Config, point: &Point) -> Result<Config, String> {
     let mut c = base.clone();
@@ -250,6 +384,8 @@ pub struct SweepArgs {
     pub sets: Vec<String>,
     pub params: Vec<Param>,
     pub lhs: Option<usize>,
+    /// Sobol' sensitivity analysis with this many base samples.
+    pub sobol: Option<usize>,
     pub design_seed: u64,
     pub seeds: Vec<u64>,
     pub days: u32,
@@ -283,7 +419,12 @@ pub fn run_sweep(base: &Config, a: SweepArgs) {
     if a.seeds.is_empty() {
         fail("provide at least one --seed");
     }
-    let points = design_points(base, &a.params, a.lhs, a.design_seed).unwrap_or_else(|e| fail(e));
+    let points = match (a.lhs, a.sobol) {
+        (Some(_), Some(_)) => fail("--lhs and --sobol are different designs; pick one"),
+        (None, Some(n)) => sobol_points(base, &a.params, n),
+        _ => design_points(base, &a.params, a.lhs, a.design_seed),
+    }
+    .unwrap_or_else(|e| fail(e));
     let runs = points
         .len()
         .checked_mul(a.seeds.len())
@@ -313,7 +454,7 @@ pub fn run_sweep(base: &Config, a: SweepArgs) {
         .enumerate()
         .map(|(k, p)| {
             let mut c = point_config(base, p).unwrap_or_else(|e| fail(format!("point {k}: {e}")));
-            if a.lhs.is_none() {
+            if a.lhs.is_none() && a.sobol.is_none() {
                 if let Some(j) = seen.insert(c.digest(), k) {
                     fail(format!(
                         "points {j} and {k} give identical results (a debugging-only setting?); drop one"
@@ -393,14 +534,21 @@ pub fn run_sweep(base: &Config, a: SweepArgs) {
     .expect("write runs");
     let summary = points_csv(&a.params, &points, a.seeds.len(), &results);
     std::fs::write(a.out.join("sweep_points.csv"), &summary).expect("write points");
+    if a.sobol.is_some() {
+        let csv = sobol_csv(&a.params, a.seeds.len(), &results, a.design_seed);
+        std::fs::write(a.out.join("sobol_indices.csv"), &csv).expect("write sobol indices");
+        print_sobol_summary(&csv);
+    }
     // Written last: a design file means the sweep finished.
     let design = Design {
         mode: if a.lhs.is_some() {
             "latin_hypercube"
+        } else if a.sobol.is_some() {
+            "sobol"
         } else {
             "grid"
         },
-        design_seed: a.lhs.map(|_| a.design_seed),
+        design_seed: a.lhs.or(a.sobol).map(|_| a.design_seed),
         params: &a.params,
         seeds: &a.seeds,
         days: a.days,
@@ -420,6 +568,35 @@ pub fn run_sweep(base: &Config, a: SweepArgs) {
     crate::index::finalize_dir(&a.out).unwrap_or_else(|e| {
         eprintln!("warning: run index finalize: {e}");
     });
+}
+
+/// Print, per outcome, the parameter with the largest total index.
+fn print_sobol_summary(csv: &str) {
+    println!("  Sobol' total-order indices (largest per outcome):");
+    let mut best: std::collections::BTreeMap<&str, (f64, &str, &str)> =
+        std::collections::BTreeMap::new();
+    let mut order: Vec<&str> = Vec::new();
+    for line in csv.lines().skip(1) {
+        let c: Vec<&str> = line.split(',').collect();
+        if !order.contains(&c[0]) {
+            order.push(c[0]);
+        }
+        let Ok(st) = c[5].parse::<f64>() else {
+            continue;
+        };
+        let e = best.entry(c[0]).or_insert((f64::NEG_INFINITY, "", ""));
+        if st > e.0 {
+            *e = (st, c[1], c[9]);
+        }
+    }
+    for o in order {
+        match best.get(o) {
+            Some((st, p, noise)) => {
+                println!("    {o:<28} {p:<36} ST {st:.2}  (noise share {noise})")
+            }
+            None => println!("    {o:<28} undefined"),
+        }
+    }
 }
 
 fn point_text(point: &Point) -> String {
@@ -724,6 +901,7 @@ mod tests {
                     sets: vec![],
                     params: vec![p("resources.food_regrowth=0.05,0.15")],
                     lhs: None,
+                    sobol: None,
                     design_seed: 1,
                     seeds: vec![1, 2],
                     days: 3,
