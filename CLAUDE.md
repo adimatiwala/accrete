@@ -11,7 +11,7 @@ Where to look:
 - **`docs/DESIGN.md`**: a module-by-module map of `accrete-core`, plus the tick pipeline.
 - **`README.md`**: a quick start and the headline results table.
 
-**Status:** Weeks 1–4 are built, plus Phase 2 tooling: scarcity rerun (A.18), manifests/`reproduce`/seed ranges/parallel aggregates (A.19), parameter sweeps (A.20), cross-PR review fixes (A.21), and a SQLite run index with periodic state snapshots (A.22). Still open in A.10: Parquet metrics, Sobol designs, surrogates, sensitivity/PDPs.
+**Status:** Weeks 1–4 are built, plus Phase 2 tooling: scarcity rerun (A.18), manifests/`reproduce`/seed ranges/parallel aggregates (A.19), parameter sweeps (A.20), cross-PR review fixes (A.21), and a SQLite run index with periodic state snapshots (A.22). The research program and its PR roadmap are in `docs/research/PROGRAM.md` (A.23). Still open in A.10: Parquet metrics, Sobol designs, surrogates, sensitivity/PDPs.
 
 ## Commands
 
