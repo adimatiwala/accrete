@@ -898,7 +898,7 @@ Paste the following into Codex once the repository is open:
 
 This appendix records what was built from this specification, in the order it was built. It also records every place where the specification left a choice open (or was found not to work as written), what was chosen, and why. The base is commit `e5a15ce` (this document and a README only). All numbers below are defaults in `configs/default.toml`, which a test keeps identical to `Config::default()`.
 
-**Status against the plan:** Week 1 complete. Week 2 complete. Week 3 complete except for the Day 5 experiment suite. Week 4: droughts (random and scripted), the metrics export, snapshots and branching, route disruptions, the random and omniscient baselines, the behavioural benchmarks, and the viewer's experiment controls are complete. Not yet built: the Week 3 Day 5 experiment suite.
+**Status against the plan:** Weeks 1–4 are complete: agents, settlements, trade, trails and roads, droughts, snapshots and branching, route disruptions, the random and omniscient baselines, the behavioural benchmarks, the viewer's experiment controls, and the Week 3 Day 5 emergence experiment suite. Suggested next work is in A.10 (run storage and parameter sweeps) and Phase 2 multi-seed experiments in Section 9.
 
 ### A.1 Repository and tooling
 
@@ -1267,3 +1267,33 @@ The spec's "load snapshot, select drought or route disruption, branch and compar
 * **`--day` on an exact-day snapshot** no longer prints a spurious "past --day" warning.
 * **Chart.** The population scale covers both branches, and the legend mentions the orange line only when branched. `V` with no branch now says so.
 * **New test, now run in CI:** every preset is accepted by `set_config`, starts on the branch day and changes the outcome, and a control stepped alongside a branch matches an unbranched run. CI's viewer step now runs `cargo test --release -p accrete-viewer`.
+
+### A.17 Emergence experiment suite (Week 3 Day 5)
+
+The three paired ablations from the Day 5 plan, as `accrete experiments`:
+
+| Experiment | Intervention | What it measures |
+|---|---|---|
+| `trade` | `social.trade_enabled = false` | Whether barter changes population, foraging, and clustering |
+| `trails` | `trails.enabled = false` | Whether worn-trail travel discounts thicken the path network and shorten trips |
+| `selfish` | `infrastructure.household_weight = 0` and `social.reciprocity_enabled = false` | Whether household concern and reciprocity change outcomes |
+
+**Design:**
+* **Fresh worlds, shared control.** Each seed starts from world-gen (not a snapshot), so early emergence is in scope. The control runs once per seed and is reused against every intervention.
+* **Config-only interventions.** Each ablation goes through the same `Config` knobs a manual `--set` would use, and `Config::differs_in_results` asserts that the intervention actually changes results.
+* **Outputs.** Per-day `control_vs_<label>_seedN_compare.csv` (same columns as `branch`, plus travel-per-food, food traded, tips shared, trail/road tiles and pathology counters), plus `emergence_summary.csv` with final-day metrics and **cumulative** trades across the run. State hashes are recorded so a non-diverging pair is visible.
+* **CLI:** `accrete experiments --seed 1,2 --days 100 -o results/emergence`, with `--only trade,trails,selfish`, `--every`, `--check` and `--set` on the shared base.
+
+The Week 3 behavioural scenarios (complementary and identical trade, reciprocity terms, busy-trail roads, selfish road reluctance) were already in the tree; this suite is the multi-day headless comparison the Day 5 plan asked for.
+
+**First results** (seed 1, 100 days):
+
+| Pair | Population (control → intervention) | Notable |
+|---|---|---|
+| trade | 284 → 286 | Intervention trades 0; control traded; hashes diverge |
+| trails | 284 → 283 | Intervention trail tiles 0; control 7; forage radius slightly longer without discounts |
+| selfish | 284 → 283 | Hashes diverge; trail tiles 7 → 3 |
+
+One seed and 100 days, not yet a finding. Phase 2 (Section 9) is multi-seed averages.
+
+**Tests:** each ablation changes the config; `--only` rejects unknown names; a 40-day paired run on seed 1 diverges for every experiment, with zero trades under `no-trade` and zero trail tiles under `no-trails`.

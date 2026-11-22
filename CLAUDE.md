@@ -11,7 +11,7 @@ Where to look:
 - **`docs/DESIGN.md`**: a module-by-module map of `accrete-core`, plus the tick pipeline.
 - **`README.md`**: a quick start and the headline results table.
 
-**Status:** Weeks 1–3 are built, and Week 4's simulation work is complete: snapshots and branching, droughts and route disruptions, the random and omniscient baselines, the behavioural benchmarks, and the viewer's experiment controls. The Week 3 Day 5 experiment suite is **not built yet** (Appendix A, "Status against the plan" and A.10).
+**Status:** Weeks 1–4 are built: snapshots and branching, droughts and route disruptions, the random and omniscient baselines, the behavioural benchmarks, the viewer's experiment controls, and the Week 3 Day 5 emergence experiment suite (`accrete experiments`). Suggested next work is in Appendix A.10 (run storage and parameter sweeps) and Phase 2 multi-seed experiments in Section 9.
 
 ## Commands
 
@@ -60,9 +60,11 @@ cargo run --release -p accrete-cli -- branch --load results/seed1_day100.snap.js
     --drought 100:120:64:64:24:0.6 --label-b drought      # control vs intervention, compared per day
 cargo run --release -p accrete-cli -- branch --load results/seed1_day100.snap.json --days 40 \
     --disrupt 100:20:block:busiest:20 --label-b cut       # route disruption on the 20 busiest non-home tiles
+cargo run --release -p accrete-cli -- experiments --seed 1 --days 100 -o results/emergence
 ```
 
-- **`accrete` subcommands:** `world`, `run`, `branch`, `trace`, `diag`, `config` and `render`.
+- **`accrete` subcommands:** `world`, `run`, `branch`, `experiments`, `trace`, `diag`, `config` and `render`.
+- **Emergence suite:** `experiments` runs the Week 3 Day 5 ablations (trade / trails / selfish) from a fresh world per seed. The control is shared; each intervention writes a per-day `control_vs_*_compare.csv`, and the suite writes `emergence_summary.csv` (cumulative trades; other metrics final-day). `--only trade,trails,selfish` selects a subset.
 - **Snapshots:** `run --save` writes the final state as `*.snap.json` (gitignored); `run --load` resumes it, and `--set` or `--config` with `--load` turn the resumed run into an intervention. `branch` loads one snapshot twice, runs a control and an intervention (`--drought DAY:DAYS:X:Y:RADIUS:SEVERITY`, `--set`, `--config-b`), and writes a per-day `*_compare.csv`. `--disrupt DAY:DAYS:block|slowF:X:Y:RADIUS` or `DAY:DAYS:block|slowF:busiest:N` schedules a route disruption (config `[[disruption.scripted]]`).
 - **`--set section.key=value`** overrides any config value (repeatable).
 - **`--check`** runs the conservation and bounds checks every tick. It's slow but catches ledger bugs.

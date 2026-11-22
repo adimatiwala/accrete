@@ -242,11 +242,22 @@ const COLUMNS: &[Col] = &[
     }),
     ("clark_evans", |m| f64::from(m.clark_evans)),
     ("forage_radius", |m| f64::from(m.forage_radius)),
+    ("travel_per_food", |m| f64::from(m.travel_per_food)),
     ("trades", |m| f64::from(m.trades)),
+    ("food_traded", |m| f64::from(m.food_traded)),
+    ("tips_shared", |m| f64::from(m.tips_shared)),
+    ("trail_tiles", |m| f64::from(m.trail_tiles)),
+    ("road_tiles", |m| f64::from(m.road_tiles)),
     ("drought_area", |m| f64::from(m.drought_area)),
     ("disrupted_tiles", |m| f64::from(m.disrupted_tiles)),
     ("tiles_moved", |m| m.tiles_moved as f64),
     ("route_failures", |m| f64::from(m.route_failures)),
+    ("pathology_oscillating", |m| m.pathology_oscillating as f64),
+    ("pathology_stuck", |m| m.pathology_stuck as f64),
+    ("pathology_starved_beside_food", |m| {
+        m.pathology_starved_beside_food as f64
+    }),
+    ("pathology_idle", |m| m.pathology_idle as f64),
 ];
 
 /// One row per day after the branch point: for each metric, the control
@@ -286,7 +297,7 @@ pub fn compare_csv(a: &Simulation, b: &Simulation, from_day: u32, la: &str, lb: 
     s
 }
 
-fn print_comparison(a: &Simulation, b: &Simulation, la: &str, lb: &str) {
+pub fn print_comparison(a: &Simulation, b: &Simulation, la: &str, lb: &str) {
     let (Some(ma), Some(mb)) = (a.metrics.last(), b.metrics.last()) else {
         return;
     };

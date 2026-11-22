@@ -9,9 +9,11 @@
 //!     --drought 100:200:64:64:20:0.6 --label-b drought
 //! accrete branch --load results/seed1_day100.snap.json --days 60 \
 //!     --disrupt 100:20:block:busiest:12 --label-b cut
+//! accrete experiments --seed 1 --days 100 -o results/emergence
 //! ```
 
 mod branch;
+mod experiments;
 mod image;
 mod run;
 mod trace;
@@ -87,6 +89,28 @@ enum Cmd {
         /// e.g. `--timelapse 0,75,150,225,300`.
         #[arg(long, value_delimiter = ',')]
         timelapse: Vec<u32>,
+    },
+    /// Week 3 Day 5 emergence suite: paired ablations (trade, trails, selfish).
+    Experiments {
+        /// One or more seeds (comma separated).
+        #[arg(long, default_value = "1", value_delimiter = ',')]
+        seed: Vec<String>,
+        /// Days to simulate for each run.
+        #[arg(long, default_value_t = 100)]
+        days: u32,
+        #[arg(short, long, default_value = "results/emergence")]
+        out: PathBuf,
+        #[arg(long, default_value_t = 25)]
+        every: u32,
+        /// Check conservation and bounds every tick (slow).
+        #[arg(long)]
+        check: bool,
+        /// Subset of experiments: trade, trails, selfish (comma separated).
+        #[arg(long, value_delimiter = ',')]
+        only: Vec<String>,
+        /// Config overrides applied to the shared base (repeatable).
+        #[arg(long = "set")]
+        sets: Vec<String>,
     },
     /// Load a snapshot and run a control and an intervention side by side.
     Branch {
@@ -263,6 +287,32 @@ fn main() {
                     run::run(parse_seed(&s), &config, &opts);
                 }
             }
+        }
+        Cmd::Experiments {
+            seed,
+            days,
+            out,
+            every,
+            check,
+            only,
+            sets,
+        } => {
+            let mut config = config;
+            for kv in &sets {
+                config = run::apply_override(&config, kv);
+            }
+            let seeds: Vec<u64> = seed.iter().map(|s| parse_seed(s)).collect();
+            experiments::run_suite(
+                &config,
+                experiments::ExperimentsArgs {
+                    seeds,
+                    days,
+                    out,
+                    every,
+                    check,
+                    only,
+                },
+            );
         }
         Cmd::Branch {
             load,
