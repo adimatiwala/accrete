@@ -22,6 +22,17 @@ This file is a map of where things are.
 | `simulation/weather.rs` | Random and scripted droughts, and optional seasons. |
 | `simulation/settlement.rs`, `emergence.rs`, `metrics.rs`, `events.rs` | Measurement only (agents never read these): settlements, clustering, depletion, specialisation, the daily metrics row, the event log, the resource ledger. |
 | `scenario.rs` | Loader for the hand-built TOML worlds in `tests/scenarios/`. |
+| `rl/` | RL environment: `mod.rs` (episodes, macro steps, rewards, baselines), `actions.rs` (42 goal-level slots and masks), `observation.rs` (knowledge-only encoding). The engine's `Control` lets one agent's choices come from outside. |
+
+## `accrete-py` (Python, built with maturin)
+
+| Path | Contents |
+|---|---|
+| `src/lib.rs` | PyO3 bindings: `accrete_rl._core.Env` (releases the GIL in `reset`/`step`). |
+| `python/accrete_rl/env.py` | Gymnasium `AccreteEnv` (`Accrete-v0`): Dict observations and action masks. |
+| `python/accrete_rl/model.py` | Actor-critic network that scores each action slot. |
+| `python/accrete_rl/train.py`, `evaluate.py` | Masked PPO with threaded vector envs, held-out evaluation, and baselines. |
+| `tests/test_env.py` | API conformance, determinism, masks, bounds, training smoke test. |
 
 ## Tick pipeline
 

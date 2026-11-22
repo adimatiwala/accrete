@@ -1,3 +1,10 @@
 /target
 /results
 *.snap.json
+
+/.venv
+__pycache__/
+*.pyd
+*.egg-info/
+/runs
+*.pdb

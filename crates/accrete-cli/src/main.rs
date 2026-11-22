@@ -6,6 +6,7 @@
 //! ```
 
 mod image;
+mod rl_eval;
 mod run;
 mod trace;
 
@@ -98,6 +99,20 @@ enum Cmd {
         seed: String,
         #[arg(long, default_value_t = 100)]
         day: u32,
+        #[arg(long = "set")]
+        sets: Vec<String>,
+    },
+    /// Evaluate baseline policies in the reinforcement-learning environment.
+    RlEval {
+        /// Policies: heuristic, random, native (comma separated).
+        #[arg(long, default_value = "native,heuristic,random", value_delimiter = ',')]
+        policy: Vec<String>,
+        /// Number of episodes (seeds 1..=n).
+        #[arg(long, default_value_t = 10)]
+        episodes: u64,
+        /// Environment settings (TOML for `RlConfig`).
+        #[arg(long)]
+        rl_config: Option<PathBuf>,
         #[arg(long = "set")]
         sets: Vec<String>,
     },
@@ -230,6 +245,26 @@ fn main() {
             trace::trace(parse_seed(&seed), &config, day, ticks, &agent, options);
         }
         Cmd::Config => print!("{}", config.to_toml_string()),
+        Cmd::RlEval {
+            policy,
+            episodes,
+            rl_config,
+            sets,
+        } => {
+            let mut config = config;
+            for kv in &sets {
+                config = run::apply_override(&config, kv);
+            }
+            let rl = match rl_config {
+                None => accrete_core::rl::RlConfig::default(),
+                Some(p) => {
+                    let text = std::fs::read_to_string(&p).expect("read rl config");
+                    accrete_core::rl::RlConfig::from_toml_str(&text).expect("parse rl config")
+                }
+            };
+            let seeds: Vec<u64> = (1..=episodes).collect();
+            rl_eval::rl_eval(&config, &rl, &policy, &seeds);
+        }
         Cmd::Diag { seed, day, sets } => {
             let mut config = config;
             for kv in &sets {

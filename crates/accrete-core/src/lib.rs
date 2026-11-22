@@ -15,6 +15,7 @@ pub mod config;
 pub mod geom;
 pub mod hash;
 pub mod inventory;
+pub mod rl;
 pub mod rng;
 pub mod scenario;
 pub mod seed;

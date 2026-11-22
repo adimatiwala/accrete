@@ -5,6 +5,15 @@ members = [
     "crates/accrete-viz",
     "crates/accrete-cli",
     "crates/accrete-viewer",
+    "crates/accrete-py",
+]
+# The Python extension needs a Python toolchain; build it with maturin
+# (`maturin develop -m crates/accrete-py/Cargo.toml`), not by default.
+default-members = [
+    "crates/accrete-core",
+    "crates/accrete-viz",
+    "crates/accrete-cli",
+    "crates/accrete-viewer",
 ]
 
 [workspace.package]

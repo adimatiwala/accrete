@@ -29,3 +29,26 @@ jobs:
         run: cargo build --release -p accrete-viewer
       - name: Headless smoke run
         run: cargo run --release -p accrete-cli -- run --seed 1 --days 30 --every 10 --check -o results
+
+  python:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup show
+      - name: Clippy (Python bindings)
+        run: cargo clippy -p accrete-py --all-targets -- -D warnings
+      - name: Build and install the extension
+        run: |
+          python -m venv .venv
+          ${{ runner.os == 'Windows' && '.venv\Scripts\python' || '.venv/bin/python' }} -m pip install maturin gymnasium numpy pytest torch --extra-index-url https://download.pytorch.org/whl/cpu
+          ${{ runner.os == 'Windows' && '.venv\Scripts\python' || '.venv/bin/python' }} -m maturin develop --release -m crates/accrete-py/Cargo.toml
+      - name: Python tests
+        run: ${{ runner.os == 'Windows' && '.venv\Scripts\python' || '.venv/bin/python' }} -m pytest crates/accrete-py/tests -q

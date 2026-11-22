@@ -1,0 +1,19 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "accrete-rl"
+version = "0.1.0"
+description = "Reinforcement-learning environment for the Accrete emergent civilization simulator"
+requires-python = ">=3.9"
+dependencies = ["numpy>=1.24", "gymnasium>=0.29"]
+
+[project.optional-dependencies]
+train = ["torch>=2.1"]
+test = ["pytest>=7"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "accrete_rl._core"
+features = ["pyo3/extension-module"]

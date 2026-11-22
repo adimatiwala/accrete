@@ -1,0 +1,8 @@
+# Simulation preset for RL training: a 64x64 world with 40 founders.
+# Everything else is the default; ticks are ~4x cheaper than the full map.
+[world]
+width = 64
+height = 64
+
+[spawn]
+agents = 40

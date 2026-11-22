@@ -9,4 +9,4 @@ pub mod settlement;
 pub mod social;
 pub mod weather;
 
-pub use engine::{Intent, Simulation};
+pub use engine::{Control, Intent, Simulation};

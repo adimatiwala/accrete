@@ -72,5 +72,22 @@ There is no rule anywhere in the code for settlements, roads, or where anyone li
 
 Appendix A.9 of `accrete.md` discusses why, and what to try next.
 
+## Reinforcement-learning environment
+
+`crates/accrete-py` makes Accrete a Gymnasium environment (`Accrete-v0`). One
+learning agent lives among scripted agents:
+- It chooses goal-level options (42 masked actions).
+- It sees only what it knows.
+- Its rewards are individual: staying alive and healthy, and having children.
+
+The package ships a masked-PPO trainer and built-in baselines. See
+[`crates/accrete-py/README.md`](crates/accrete-py/README.md) and
+`accrete.md` Appendix B.
+
+```sh
+.venv/Scripts/python -m maturin develop --release -m crates/accrete-py/Cargo.toml
+.venv/Scripts/python -m accrete_rl.train --total-steps 300000 --out runs/ppo
+```
+
 Performance on one laptop core: about 945 ticks/s with 100 agents, and about 260–290
 ticks/s with 500–600 agents (300 days in about 25–30 s).

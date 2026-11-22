@@ -61,8 +61,23 @@ pub enum Intent {
     ImproveShelter,
 }
 
+/// External control of one agent (reinforcement learning, tests, tools).
+///
+/// While `held` is set, the controlled agent pursues exactly that option
+/// instead of scoring its own: same routing, same intents, same rules. Its
+/// needs, memory, and body are simulated exactly as for everyone else.
+#[derive(Clone, Debug, Default)]
+pub struct Control {
+    pub agent: u32,
+    pub held: Option<Candidate>,
+    /// Set when the held target could not be routed to this tick.
+    pub route_failed: bool,
+}
+
 pub struct Simulation {
     pub config: Config,
+    /// An agent whose choices come from outside the simulation, if any.
+    pub control: Option<Control>,
     pub rates: TickRates,
     pub tick: u64,
     pub world: World,
@@ -132,6 +147,7 @@ impl Simulation {
             intents: Vec::new(),
             scratch: PathScratch::default(),
             weather: WeatherState::default(),
+            control: None,
             total_births: 0,
             total_deaths: [0; 2],
             lifespans: (0.0, 0),
@@ -383,6 +399,13 @@ impl Simulation {
     // -----------------------------------------------------------------------
 
     fn propose(&mut self, i: usize, tick: u64) -> Intent {
+        if self
+            .control
+            .as_ref()
+            .is_some_and(|c| c.agent == self.agents[i].id)
+        {
+            return self.propose_controlled(i, tick);
+        }
         // Fast path: an agent resting in place keeps resting between periodic
         // re-checks, unless a need crosses its threshold. This changes only how
         // often a resting agent re-decides, not what it would decide.
@@ -434,7 +457,43 @@ impl Simulation {
                 .cloned()
                 .expect("idle is always available")
         });
+        self.commit_choice(i, cands, chosen, tick)
+    }
 
+    /// Externally controlled agent: pursue the held option (or wait if none).
+    fn propose_controlled(&mut self, i: usize, tick: u64) -> Intent {
+        let pos = self.agents[i].pos;
+        let held = self.control.as_ref().and_then(|c| c.held.clone());
+        let idle = || Candidate {
+            kind: GoalKind::Idle,
+            target: pos,
+            join: None,
+            score: 0.0,
+            est_ticks: 0.0,
+            terms: Vec::new(),
+        };
+        let chosen = match held {
+            Some(c) if c.target == pos || self.ensure_route(i, c.target, tick) => c,
+            Some(_) => {
+                if let Some(ctl) = self.control.as_mut() {
+                    ctl.route_failed = true;
+                }
+                idle()
+            }
+            None => idle(),
+        };
+        self.commit_choice(i, vec![chosen.clone()], chosen, tick)
+    }
+
+    /// Adopt `chosen` as agent `i`'s goal (tracking oscillation against the
+    /// options `cands` it had), record the trace, and map it to an intent.
+    fn commit_choice(
+        &mut self,
+        i: usize,
+        cands: Vec<Candidate>,
+        chosen: Candidate,
+        tick: u64,
+    ) -> Intent {
         let agent = &mut self.agents[i];
         if !agent
             .goal

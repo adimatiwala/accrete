@@ -1073,3 +1073,30 @@ These point to the next experiments: longer trips (more scarcity), and goods tha
   * a Latin-hypercube or Sobol design over parameters, with about 10 seeds per point;
   * surrogate models (Gaussian process or gradient-boosted trees) from parameters to emergence metrics;
   * Sobol or Morris sensitivity indices and partial-dependence curves.
+
+---
+
+## Appendix B — Reinforcement-learning environment (branch `sb/rl-env`)
+
+**What:** one learning agent in a scripted society (`accrete-core/src/rl`, Python package `crates/accrete-py`, Gymnasium id `Accrete-v0`).
+
+**Design decisions:**
+* **Goal-level actions.** `Discrete(42)` = 14 goal kinds × the 3 best targets as ranked by the agent's own scoring, with masking. Routing and movement stay scripted, so the learner decides *what* to do, not *how* to walk. Masked actions become "wait" unless `strict_actions=True`.
+* **Macro steps.** An action runs until its goal completes or fails, a need crosses its threshold, or 12 ticks pass. This keeps horizons learnable (~1,000 steps per 60-day episode).
+* **Knowledge-only observations.** A 14×13×13 grid of what the agent knows and sees, a 36-value vector (body, household, traits), and 42×5 slot features. These are the same information limits as the scripted agents.
+* **Individual rewards only:** +1/day alive, −2/day deprived, +2 × Δhealth, +5 per child, −20 for dying of deprivation. Society-level outcomes are never rewarded, which preserves "motives, never outcomes".
+* **Engine hook.** `Simulation::control` replaces one agent's choice; everything downstream is shared code. This refactor left the golden hashes unchanged.
+* **Determinism and speed.** The same seed and actions give identical results. The Rust core releases the GIL, so 16 environments step in parallel on threads (~330 steps/s).
+* **Baselines:** `heuristic` (scripted logic through the interface), `native` (the uncontrolled agent), `random`. Available from the CLI as `accrete rl-eval` and from Python as `accrete_rl.evaluate`.
+
+**Result (preliminary, run still in progress).** Masked PPO trained from scratch on a 64×64 world with 40 agents and 60-day episodes; scores are on 8 held-out world seeds:
+
+| Policy | Return |
+|---|---|
+| random | −27.2 |
+| heuristic | 65.0 |
+| PPO, ~150k steps (greedy evaluation) | **68.8**, 0/8 deaths, 1.75 births vs 1.38 for the heuristic |
+
+The learner matches and slightly exceeds the hand-written utility agent. The final evaluation with the sampled policy is still to be recorded.
+
+**Tests:** 6 Rust environment tests (determinism, masking, truncation, heuristic tracks native, config drift) and 8 Python tests (Gymnasium `check_env`, reproducibility, bounds and masks, training smoke test). CI has a Python job on macOS and Windows.
