@@ -1256,3 +1256,13 @@ The spec's "load snapshot, select drought or route disruption, branch and compar
 **Verification:** headless screenshots after loading a day-60 snapshot of seed 1 and branching with `--intervene 1` (cut routes, viewing the intervention) and `--intervene 0` (drought, viewing the control) show the banner, the red disrupted tiles and the overlaid population line. The viewer only calls `Simulation::step`, `snapshot_json` and `set_config`, all of which are tested in core.
 
 **Rebased onto the reviewed PRs:** `set_config` now returns a `Result`, and the viewer ignored it. A rejected intervention would have shown an unchanged copy labelled as the intervention. Branching now reports the error and does not branch. CI does not lint the viewer, so the compiler warning alone would not have caught this.
+
+**Review fixes** (from a review agent's pass over this PR; the control really is unchanged, both simulations stay on the same tick, and nothing in the viewer feeds back into simulation state):
+* **`--intervene` ignored `--select`.** The branch was made before the selection was set, so area presets centred on the map centre. The selection is now set first.
+* **`--load` with `--day`, `--seed` or `--config`.** `--day` ran that many extra days on top of the snapshot, and `--seed` and `--config` were silently dropped. `--day` is now the day to show (a warning is printed if the snapshot is already past it), and `--seed` or `--config` with `--load` is an error.
+* **`--intervene` failed silently.** An unparseable or out-of-range preset now exits with an error, and so does a branch that fails at startup.
+* **Snapshots of a branch.** `K` while branched now adds `_control` or `_intervention` to the file name, so saving both sides at one tick no longer overwrites. `L` says when the reloaded state carries an intervention.
+* **New worlds after `--load`.** `G` and `S` no longer carry the snapshot's scripted droughts and disruptions, pinned to its days and tiles, into a new world.
+* **Agent ids across branches.** Each branch numbers its own newborns, so after `V` (or `L`) the selection is kept only for an agent born before the split that still exists.
+* **Chart.** The population scale covers both branches, and the legend mentions the orange line only when branched. `V` with no branch now says so.
+* **New test, now run in CI:** every preset is accepted by `set_config`, starts on the branch day and changes the outcome, and a control stepped alongside a branch matches an unbranched run. CI's viewer step now runs `cargo test --release -p accrete-viewer`.

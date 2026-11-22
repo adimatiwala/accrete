@@ -33,12 +33,12 @@ CI (`.github/workflows/ci.yml`) runs on pull requests (including when a PR's bas
 2. the clippy command above
 3. release tests for `accrete-core`, `accrete-cli` and `accrete-viz`
 4. **debug** tests for `accrete-core`, which must match the same golden hashes
-5. a viewer build
+5. a viewer build and the viewer's tests (`cargo test --release -p accrete-viewer`)
 6. a headless smoke run: `cargo run --release -p accrete-cli -- run --seed 1 --days 30 --every 10 --check -o results`
 
 **Path filtering.** A `changes` job runs `.github/scripts/ci-changes.sh BASE HEAD` to decide what is needed:
 - **Docs only** (`*.md`, `docs/`, `.claude/`, the PR template, `.gitignore`): the Rust job is skipped.
-- **`accrete-cli` only:** step 4 (debug tests) and step 5 (viewer build) are skipped.
+- **`accrete-cli` only:** step 4 (debug tests) and step 5 (viewer build and tests) are skipped.
 - **`accrete-viz` or `accrete-viewer` only:** step 4 is skipped.
 - **Anything else,** including core, `configs/`, `tests/`, the toolchain, dependencies, `.gitattributes`, CI files, and **any path the script doesn't recognise**: everything runs.
 

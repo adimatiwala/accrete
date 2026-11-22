@@ -85,9 +85,11 @@ jobs:
       - name: Test (debug; must match the same golden hashes)
         if: needs.changes.outputs.core != 'false'
         run: cargo test -p accrete-core
-      - name: Build viewer
+      - name: Build and test viewer
         if: needs.changes.outputs.viewer != 'false'
-        run: cargo build --release -p accrete-viewer
+        run: |
+          cargo build --release -p accrete-viewer
+          cargo test --release -p accrete-viewer
       - name: Headless smoke run
         run: cargo run --release -p accrete-cli -- run --seed 1 --days 30 --every 10 --check -o results
 
