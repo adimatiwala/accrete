@@ -229,12 +229,28 @@ impl AgentMemory {
         self.known_count
     }
 
-    fn slots(r: Resource, c: &MemoryConfig) -> usize {
+    pub fn slots(r: Resource, c: &MemoryConfig) -> usize {
         match r {
             Resource::Food => c.food_slots as usize,
             Resource::Wood => c.wood_slots as usize,
             Resource::Stone => c.stone_slots as usize,
         }
+    }
+
+    /// Replace all resource memories at once (omniscient baseline only).
+    /// `entries` must already respect the per-type pool sizes; an entry for a
+    /// place the agent recently failed to reach keeps that cooldown.
+    pub fn set_resources(&mut self, mut entries: Vec<ResourceMemory>) {
+        for e in entries.iter_mut() {
+            if let Some(old) = self
+                .resources
+                .iter()
+                .find(|m| m.pos == e.pos && m.resource == e.resource)
+            {
+                e.unreachable_until = old.unreachable_until;
+            }
+        }
+        self.resources = entries;
     }
 
     /// Record an observation of `amount` of `r` at `p`.

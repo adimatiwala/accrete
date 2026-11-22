@@ -898,7 +898,7 @@ Paste the following into Codex once the repository is open:
 
 This appendix records what was built from this specification, in the order it was built. It also records every place where the specification left a choice open (or was found not to work as written), what was chosen, and why. The base is commit `e5a15ce` (this document and a README only). All numbers below are defaults in `configs/default.toml`, which a test keeps identical to `Config::default()`.
 
-**Status against the plan:** Week 1 complete. Week 2 complete. Week 3 complete except for the Day 5 experiment suite. Week 4: droughts (random and scripted), the metrics export, and snapshots and branching are complete. Not yet built: route disruption, the random and omniscient baselines, and the behavioural-benchmark range files.
+**Status against the plan:** Week 1 complete. Week 2 complete. Week 3 complete except for the Day 5 experiment suite. Week 4: droughts (random and scripted), the metrics export, snapshots and branching, the random and omniscient baselines, and the behavioural benchmarks are complete. Not yet built: route disruption.
 
 ### A.1 Repository and tooling
 
@@ -1065,8 +1065,6 @@ These point to the next experiments: longer trips (more scarcity), and goods tha
 
 * **Week 4 items:**
   * Route disruption.
-  * The random and omniscient baselines (`AgentKind` is stubbed).
-  * Behavioural-benchmark range files.
 * **Run storage:** each run should keep a manifest (seed, full config, commit, `Cargo.lock` hash), which reproduces it exactly given determinism, plus the daily metrics (CSV now, Parquet later), periodic snapshots, and a SQLite or DuckDB index of runs.
 * **Parameter → behaviour mapping:**
   * a Latin-hypercube or Sobol design over parameters, with about 10 seeds per point;
@@ -1170,3 +1168,22 @@ This entry also covers the CLAUDE.md change that was merged before this changelo
   * label and save-path checks;
   * day-aligned comparison rows.
 * **Windows CI fix.** The save-path test used `/dev/null/x.snap.json` as an unwritable path. On Windows that resolves to `C:\dev\null\x.snap.json`, which can be created, so the test failed there. The test now uses a path under a regular file, which no platform can create. Only the test changed; no hash moved.
+
+### A.14 Baselines and behavioural benchmarks (Section 10, layers 3 and 4)
+
+| Decision | Rationale |
+|---|---|
+| **Random baseline** (`sim.agent_kind = "random"`) | Shuffles the scored options and takes the first one with a reachable target, so each action is valid but chosen at random. It draws from the `agents` stream, which normal agents never use, so it has its own stream (as Section 10 asks) without changing any golden hash. |
+| **Omniscient baseline** (`sim.agent_kind = "omniscient"`) | Same decision logic, perfect knowledge, the **same memory limits**. On every observation the agent knows the whole map's terrain, and for each resource it remembers the *nearest* tiles holding it (true amounts, ring scan nearest-first, up to its pool size), likewise the nearest homes. Routes use true costs. Keeping the memory limits means the gap to normal agents measures what limited *sight and stale memory* cost, not what extra memory would buy. |
+| **Benchmark ranges** in `tests/benchmarks/primary_seed.toml` | Seed 1 at day 100: population, starvation deaths, hunger, homed share, the four pathology counters, walking per unit of food, homes near fertile land, and generational turnover (births and old-age deaths). The observed values when the ranges were set are written next to each range. Golden hashes show that something changed; these show whether behaviour got worse. |
+| **Baseline ordering** as a test | At day 60, normal agents must reach at least 2× the random population and at most 1.05× the omniscient one. |
+
+**First results** (seed 1, 100 days):
+
+| Agents | Population | Starvation deaths | Tiles walked per unit of food |
+|---|---|---|---|
+| Random | 24 | 72 | 4.81 |
+| Normal | 284 | 0 | 0.48 |
+| Omniscient | 321 | 0 | 0.26 |
+
+Normal agents are far better than random, so the decision logic works. Limited sight and memory cost about 12 % of the population and nearly double the walking, so the knowledge limits genuinely constrain behaviour. Random agents also trip the oscillation detector thousands of times, a useful check that the detector responds.

@@ -29,8 +29,8 @@ use crate::agents::agent::{
 };
 use crate::agents::decision::{self, Candidate, Ctx, Trace, reproduce_blockers};
 use crate::agents::memory::{AgentMemory, HomeSighting};
-use crate::agents::pathfinding::{AgentBelief, PathScratch};
-use crate::config::{Config, TICKS_PER_DAY, TickRates};
+use crate::agents::pathfinding::{AgentBelief, Omniscient, PathScratch};
+use crate::config::{AgentKind, Config, TICKS_PER_DAY, TickRates};
 use crate::geom::{Pos, is_diagonal};
 use crate::hash::{StableHash, StableHasher};
 use crate::inventory::{Inventory, Resource};
@@ -442,7 +442,7 @@ impl Simulation {
         let cands = {
             let cx = self.ctx(tick);
             let a = &self.agents[i];
-            if self.config.sim.agent_kind == crate::config::AgentKind::Random {
+            if self.config.sim.agent_kind == AgentKind::Random {
                 random_choice(decision::evaluate(a, &cx), &mut self.rng_agents)
             } else {
                 decision::evaluate(a, &cx)
@@ -572,14 +572,25 @@ impl Simulation {
                 return true;
             }
         }
-        let res = self.scratch.find_path(
-            &self.world,
-            &AgentBelief(&agent.memory),
-            agent.pos,
-            target,
-            mc,
-            mc.astar_max_expansions,
-        );
+        let res = if self.config.sim.agent_kind == AgentKind::Omniscient {
+            self.scratch.find_path(
+                &self.world,
+                &Omniscient,
+                agent.pos,
+                target,
+                mc,
+                mc.astar_max_expansions,
+            )
+        } else {
+            self.scratch.find_path(
+                &self.world,
+                &AgentBelief(&agent.memory),
+                agent.pos,
+                target,
+                mc,
+                mc.astar_max_expansions,
+            )
+        };
         self.today.astar_searches += 1;
         let agent = &mut self.agents[i];
         match res {
@@ -1922,6 +1933,10 @@ impl Simulation {
 
 /// Observe the sight square and update memory.
 pub fn observe(a: &mut Agent, world: &World, c: &Config, r: &TickRates, tick: u64) {
+    if c.sim.agent_kind == AgentKind::Omniscient {
+        observe_omniscient(a, world, c, tick);
+        return;
+    }
     let half_life = r.freshness_half_life_ticks;
     let mem_cfg = &c.memory;
     let home_slots = mem_cfg.home_slots as usize;
@@ -1990,6 +2005,101 @@ fn home_sighting(world: &World, hid: HomeId, base_capacity: u32) -> HomeSighting
         // A home always counts itself, even if the tile index is not built yet.
         tile_homes: (world.homes_on(h.pos).len() as u32).max(1),
     }
+}
+
+/// Omniscient baseline (evaluation only): perfect knowledge within the same
+/// memory limits as normal agents. The agent knows the terrain of the whole
+/// map, and for each resource it remembers the *nearest* tiles that hold it
+/// (true amounts, seen now), up to its pool size; likewise the nearest homes.
+/// Routes use true costs (see `route_belief`). Its decision logic is the same
+/// as a normal agent's, so the gap between the two measures what limited
+/// sight and memory cost.
+fn observe_omniscient(a: &mut Agent, world: &World, c: &Config, tick: u64) {
+    let mem = &c.memory;
+    let n = world.dims.len();
+    if (a.memory.known_count() as usize) < n {
+        for i in 0..n as u32 {
+            a.memory.learn(world.dims.pos(i));
+        }
+    }
+    let caps = [
+        AgentMemory::slots(Resource::Food, mem),
+        AgentMemory::slots(Resource::Wood, mem),
+        AgentMemory::slots(Resource::Stone, mem),
+    ];
+    let home_cap = mem.home_slots as usize;
+    let mut found: [Vec<crate::agents::memory::ResourceMemory>; 3] = Default::default();
+    let mut homes_seen = 0usize;
+    let max_r = world.dims.width.max(world.dims.height) as i32;
+    // Rings of increasing Chebyshev distance: nearest first, in a fixed order.
+    for radius in 0..=max_r {
+        let full = (0..3).all(|k| found[k].len() >= caps[k]) && homes_seen >= home_cap;
+        if full {
+            break;
+        }
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx.abs().max(dy.abs()) != radius {
+                    continue;
+                }
+                let p = a.pos.offset(dx, dy);
+                if !world.contains(p) {
+                    continue;
+                }
+                let t = world.tile(p);
+                let pile = world.pile_at(p).map(|pl| pl.goods);
+                for res in Resource::ALL {
+                    let k = res.index();
+                    if found[k].len() >= caps[k] {
+                        continue;
+                    }
+                    let base = match res {
+                        Resource::Food => t.food,
+                        Resource::Wood => t.wood,
+                        Resource::Stone => t.stone,
+                    };
+                    let amount = base + pile.map_or(0.0, |g| g.get(res));
+                    if amount >= mem.min_amount {
+                        found[k].push(crate::agents::memory::ResourceMemory {
+                            pos: p,
+                            resource: res,
+                            amount,
+                            seen_tick: tick,
+                            unreachable_until: 0,
+                        });
+                    }
+                }
+                if homes_seen < home_cap {
+                    for &hid in world.homes_on(p) {
+                        a.memory.note_home(
+                            hid,
+                            p,
+                            home_sighting(world, hid, c.homes.comfortable_capacity),
+                            tick,
+                            home_cap,
+                        );
+                        homes_seen += 1;
+                    }
+                }
+            }
+        }
+    }
+    let [food, wood, stone] = found;
+    let mut all = food;
+    all.extend(wood);
+    all.extend(stone);
+    a.memory.set_resources(all);
+    if let Some(hid) = a.home {
+        let h = &world.homes[hid as usize];
+        a.memory.home_food_seen = h.stored().food;
+        a.memory.home_room_seen = h
+            .chests
+            .iter()
+            .map(|ch| (c.inventory.chest_capacity - ch.weight(&c.inventory)).max(0.0))
+            .sum();
+    }
+    a.last_observe_tick = tick;
+    a.moved = false;
 }
 
 fn log_pathology(

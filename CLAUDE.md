@@ -11,7 +11,7 @@ Where to look:
 - **`docs/DESIGN.md`**: a module-by-module map of `accrete-core`, plus the tick pipeline.
 - **`README.md`**: a quick start and the headline results table.
 
-**Status:** Weeks 1–3 and most of Week 4 are built, including snapshots and branching. Route disruption, the random and omniscient baselines, and the behavioural-benchmark range files are **not built yet** (Appendix A, "Status against the plan" and A.10).
+**Status:** Weeks 1–3 and most of Week 4 are built, including snapshots and branching, the random and omniscient baselines, and the behavioural benchmarks. Route disruption is **not built yet** (Appendix A, "Status against the plan" and A.10).
 
 ## Commands
 
@@ -21,7 +21,7 @@ The toolchain is pinned to Rust **1.86.0** in `rust-toolchain.toml`, with editio
 cargo build --release                                   # whole workspace
 cargo test --release -p accrete-core                    # main suite (~30 s); prefer --release
 cargo test -p accrete-core                              # debug build; simulation tests take ~4 min
-cargo test --release -p accrete-core --test scenarios   # one integration-test file (scenarios | simulation | worldgen)
+cargo test --release -p accrete-core --test scenarios   # one integration-test file (scenarios | simulation | worldgen | benchmarks)
 cargo test --release -p accrete-core --test scenarios overcrowded_home   # one test, by name substring
 cargo test --release -p accrete-core --lib failed_join  # unit tests inside src/ (e.g. simulation/engine.rs)
 cargo fmt --all
@@ -64,6 +64,8 @@ cargo run --release -p accrete-cli -- branch --load results/seed1_day100.snap.js
 - **Snapshots:** `run --save` writes the final state as `*.snap.json` (gitignored); `run --load` resumes it, and `--set` or `--config` with `--load` turn the resumed run into an intervention. `branch` loads one snapshot twice, runs a control and an intervention (`--drought DAY:DAYS:X:Y:RADIUS:SEVERITY`, `--set`, `--config-b`), and writes a per-day `*_compare.csv`.
 - **`--set section.key=value`** overrides any config value (repeatable).
 - **`--check`** runs the conservation and bounds checks every tick. It's slow but catches ledger bugs.
+- **Baselines:** `--set sim.agent_kind=random` or `--set sim.agent_kind=omniscient`, for evaluation only. Random agents pick a valid option at random; omniscient agents use the normal decision logic with perfect knowledge (whole-map terrain, the nearest resources of each type and true route costs) within the same memory limits.
+- **Benchmarks:** `tests/benchmarks/primary_seed.toml` holds accepted ranges for seed 1 at day 100, plus the baseline ordering. `cargo test --release -p accrete-core --test benchmarks -- --nocapture` prints every value against its range. A range is changed only deliberately, with the reason recorded in Appendix A.
 - **Viewer flags:** `--seed`, `--day`, `--play`, `--select <agent>`, `--config <file>`, and `--screenshot <png>` for headless verification.
 - **Seeds** can be decimal, `0x…` hex, or free text, which is hashed.
 - **`results/`** is gitignored.
