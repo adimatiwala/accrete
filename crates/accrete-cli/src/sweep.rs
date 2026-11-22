@@ -358,6 +358,7 @@ pub fn run_sweep(base: &Config, a: SweepArgs) {
                         out: &a.out,
                         every: 0,
                         snap_every: 0,
+                        save_every: 0,
                         label: &label,
                         timelapse: &[],
                         save: None,
@@ -730,16 +731,18 @@ mod tests {
             );
             let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(&out)
                 .unwrap()
-                .map(|e| {
+                .filter_map(|e| {
                     let e = e.unwrap();
-                    (
-                        e.file_name().to_string_lossy().into_owned(),
-                        std::fs::read(e.path()).unwrap(),
-                    )
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    if crate::index::is_index_artifact(&name) {
+                        return None;
+                    }
+                    Some((name, std::fs::read(e.path()).unwrap()))
                 })
                 .collect();
             files.sort();
             assert!(out.join("p001_seed2_manifest.json").exists());
+            assert!(out.join(crate::index::DB_NAME).exists());
             let design: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(out.join("sweep_design.json")).unwrap())
                     .unwrap();

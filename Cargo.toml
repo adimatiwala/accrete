@@ -24,6 +24,8 @@ toml = "0.8"
 clap = { version = "4.5", features = ["derive"] }
 png = "0.17"
 macroquad = "0.4"
+# Bundled SQLite so the run index works offline on macOS and Windows.
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 # Release and debug builds must produce identical simulation results. Nothing
 # here may enable fast-math or CPU-specific code generation.

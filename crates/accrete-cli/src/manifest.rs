@@ -305,6 +305,7 @@ mod tests {
             out,
             every: 0,
             snap_every: 0,
+            save_every: 0,
             label,
             timelapse: &[],
             save,

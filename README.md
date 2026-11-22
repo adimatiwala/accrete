@@ -13,7 +13,7 @@ macOS and Windows, with golden hashes in `tests/golden/`).
 crates/
   accrete-core/    pure simulation: world gen, agents, engine, social, weather, metrics
   accrete-viz/     overlay colours shared by the viewer and the CLI renderer
-  accrete-cli/     headless runner: run, branch, experiments, render, trace, diag, world, config
+  accrete-cli/     headless runner: run, branch, experiments, sweep, index, reproduce, render, trace, diag, world, config
   accrete-viewer/  macroquad viewer: pan/zoom, overlays, inspector, playback
 configs/default.toml   every tunable, mirroring Config::default()
 tests/scenarios/       hand-built worlds for behavioural tests (Week 2 + Week 3)
@@ -47,8 +47,11 @@ cargo run --release -p accrete-cli -- experiments --seed 1,2,3 --days 300 --only
 cargo run --release -p accrete-cli -- experiments --seed 1-10 --jobs 8 --days 300 -o results/phase2
 # Parameter sweep: a grid over food regrowth, 3 seeds per point, in parallel
 cargo run --release -p accrete-cli -- sweep --param resources.food_regrowth=0.03,0.06,0.1,0.15 --seed 1-3 --days 150 --jobs 8
-# Every run writes a manifest; check that one reproduces exactly
+# Every run writes a manifest and upserts into results/.../runs.sqlite
 cargo run --release -p accrete-cli -- reproduce results/phase2/control_seed1_manifest.json
+cargo run --release -p accrete-cli -- index query -d results/phase2 --label control
+# Mid-run state snapshots every 50 days (PNG maps still use --snap-every)
+cargo run --release -p accrete-cli -- run --seed 1 --days 100 --save-every 50 -o results
 
 # Why did agent 42 do that? Tick-by-tick options and utility terms
 cargo run --release -p accrete-cli -- trace --seed 1 --day 120 --ticks 24 --agent 42 --options

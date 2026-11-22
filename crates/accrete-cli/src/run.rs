@@ -19,6 +19,9 @@ pub struct RunOpts<'a> {
     pub out: &'a Path,
     pub every: u32,
     pub snap_every: u32,
+    /// Write a state snapshot (`*.snap.json`) every N days (0 = none).
+    /// Distinct from `snap_every`, which renders PNG maps.
+    pub save_every: u32,
     pub label: &'a str,
     /// Absolute days to capture for the timelapse strip.
     pub timelapse: &'a [u32],
@@ -35,13 +38,13 @@ pub struct RunOpts<'a> {
 /// A run label is used in output file names: it must be a plain name.
 pub fn check_label(label: &str) -> Result<(), String> {
     if label.is_empty()
-        || label.contains(['/', '\\', ':'])
+        || label.contains(['/', '\\', ':', ','])
         || label == "."
         || label == ".."
         || label.chars().any(char::is_control)
     {
         return Err(format!(
-            "label {label:?} must be a plain file-name part (no path separators)"
+            "label {label:?} must be a plain file-name part (no path separators or commas)"
         ));
     }
     Ok(())
@@ -129,9 +132,29 @@ pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
         },
         None => crate::manifest::Start::Fresh { seed },
     };
+    // Refuse a conflicting prior manifest *before* --save-every can clobber
+    // mid-run snapshots. Start/config must match; ticks must match the planned
+    // length unless this run may stop early on extinction (then the end-of-run
+    // write still enforces an exact match).
+    let planned_ticks = u64::from(opts.days) * TICKS_PER_DAY;
+    let manifest_path = crate::manifest::Manifest::path_for(out, label, seed);
+    if let Ok(old) = crate::manifest::Manifest::read(&manifest_path) {
+        let same_start = old.start == start
+            && old.start_tick == tick0
+            && old.config.digest() == sim.config.digest();
+        let ticks_ok =
+            old.ticks == planned_ticks || (opts.stop_on_extinction && old.ticks <= planned_ticks);
+        if !same_start || !ticks_ok {
+            panic!(
+                "{} already records a different run; use a different --label or -o",
+                manifest_path.display()
+            );
+        }
+    }
     let mut frames: Vec<(Canvas, Canvas)> = Vec::new();
     let mut extinct = sim.population() == 0;
     let mut snap_pngs: Vec<String> = Vec::new();
+    let mut state_snaps: Vec<String> = Vec::new();
     let mut frames_written: Vec<String> = Vec::new();
     if timelapse.contains(&sim.day()) {
         frames.push((
@@ -156,6 +179,13 @@ pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
             let name = format!("{label}_seed{seed}_day{d:03}");
             snapshot(&sim, opts.out, &name);
             snap_pngs.push(format!("{name}.png"));
+        }
+        if opts.save_every > 0 && d % opts.save_every == 0 {
+            let name = format!("{label}_seed{seed}_day{d:03}.snap.json");
+            let path = out.join(&name);
+            sim.save_snapshot(&path)
+                .unwrap_or_else(|e| panic!("saving periodic snapshot: {e}"));
+            state_snaps.push(name);
         }
         if sim.population() == 0 && !extinct {
             extinct = true;
@@ -241,6 +271,7 @@ pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
         format!("{base}_final.png"),
     ];
     outputs.extend(snap_pngs);
+    outputs.extend(state_snaps);
     if !frames_written.is_empty() {
         outputs.extend(frames_written);
     }
@@ -268,7 +299,10 @@ pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
         outputs,
     };
     match manifest.write(out) {
-        Ok(p) => println!("  manifest written to {}", p.display()),
+        Ok(p) => {
+            println!("  manifest written to {}", p.display());
+            crate::index::upsert_after_run(out, &p);
+        }
         Err(e) => panic!("{e}"),
     }
     sim
@@ -495,7 +529,7 @@ mod tests {
         for ok in ["run", "drought-60", "a_b.2"] {
             assert!(check_label(ok).is_ok(), "{ok}");
         }
-        for bad in ["", "a/b", "a\\b", "c:x", ".", "..", "tab\there"] {
+        for bad in ["", "a/b", "a\\b", "c:x", "a,b", ".", "..", "tab\there"] {
             assert!(check_label(bad).is_err(), "{bad:?}");
         }
     }

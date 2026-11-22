@@ -898,7 +898,7 @@ Paste the following into Codex once the repository is open:
 
 This appendix records what was built from this specification, in the order it was built. It also records every place where the specification left a choice open (or was found not to work as written), what was chosen, and why. The base is commit `e5a15ce` (this document and a README only). All numbers below are defaults in `configs/default.toml`, which a test keeps identical to `Config::default()`.
 
-**Status against the plan:** Weeks 1–4 are complete. Phase 2 tooling is in place: the scarcity rerun (A.18), run manifests with `accrete reproduce`, seed ranges, parallel seeds and aggregates (A.19), and grid / Latin-hypercube parameter sweeps (A.20). Cross-PR review fixes for the stack are in A.21. Suggested next work in A.10: a SQLite/DuckDB run index, Parquet metrics, Sobol designs, and larger multi-seed Phase 2 campaigns.
+**Status against the plan:** Weeks 1–4 are complete. Phase 2 tooling is in place: the scarcity rerun (A.18), run manifests with `accrete reproduce`, seed ranges, parallel seeds and aggregates (A.19), grid / Latin-hypercube parameter sweeps (A.20), cross-PR review fixes (A.21), and a SQLite run index with periodic state snapshots (A.22). Suggested next work in A.10: Parquet metrics, Sobol designs, surrogates, sensitivity/PDPs, and larger multi-seed Phase 2 campaigns.
 
 ### A.1 Repository and tooling
 
@@ -1063,7 +1063,7 @@ These point to the next experiments: longer trips (more scarcity), and goods tha
 
 ### A.10 Not yet implemented, and suggested next steps
 
-* **Run storage:** manifests and `accrete reproduce` are done (A.19). Still to do: Parquet metrics, periodic snapshots per run, and a SQLite or DuckDB index of runs.
+* **Run storage:** manifests and `accrete reproduce` are done (A.19); the SQLite run index and periodic state snapshots (`--save-every`) are done (A.22). Still to do: Parquet metrics (CSV remains the daily export).
 * **Parameter → behaviour mapping:**
   * grid and Latin-hypercube sweeps over parameters, across seeds, are done (A.20); Sobol designs are still to do;
   * surrogate models (Gaussian process or gradient-boosted trees) from parameters to emergence metrics;
@@ -1449,3 +1449,20 @@ Findings from review agents over PRs 5–12, fixed on `feat/sweeps` (the tip con
 * `branch` rejects a silent global `--config` (use `--config-b`).
 * Snapshot `relative_path` is stored with `/`, and reproduce joins / splits on both separators, so a Windows-written manifest still finds its snapshot on macOS.
 * Viewer: a no-op intervention (e.g. halving already-zero regrowth) refuses to branch.
+
+### A.22 SQLite run index and periodic state snapshots (A.10 "run storage")
+
+Phase 2 campaigns leave many manifests on disk. This entry makes them queryable and adds mid-run state saves without changing simulation results.
+
+| Decision | Rationale |
+|---|---|
+| **Bundled SQLite (`rusqlite` + `bundled`)** | Offline on macOS and Windows with no system library; DuckDB would be heavier for a simple upsert/query CLI. |
+| **`runs.sqlite` next to the outputs** | Same folder as the manifests; moving a results tree keeps the index with it. |
+| **Auto-upsert on manifest write** | Every `run` / `branch` / `experiments` / `sweep` path already goes through `run::drive`; failures to index warn and do not fail the run (the JSON manifest is the source of truth). The DB is not byte-identical across `--jobs` (upsert order and `indexed_at`); identity checks skip `runs.sqlite*`. |
+| **`accrete index rebuild` / `query` / `sql`** | Rebuild walks `*_manifest.json` one level deep and drops rows whose files are gone. Query filters are ANDed CSV. SQL is read-only (`SELECT` / `WITH` / `PRAGMA`). |
+| **Indexed columns** | Label, seed, ticks, hashes, config digest, a few knobs (`food_regrowth`, `agent_kind`, trade/trails), build provenance, and final metrics totals when the CSV exists. |
+| **`--save-every N`** | Writes `<label>_seed<S>_day<D>.snap.json` after each completed day with `day % N == 0` (not the start/load day) and lists them in the manifest. Distinct from `--snap-every` (PNG maps). A conflicting prior manifest for the same label/seed is refused *before* the loop so mid-run snaps are not clobbered. |
+| **Read-only query/sql** | `index query` / `index sql` open the DB read-only and do not create a missing file. SQL allows `SELECT`, `WITH … SELECT`, and a short allowlist of non-mutating `PRAGMA`s; writers use a busy timeout and short retries under `--jobs`. |
+
+**Still deferred from A.10:** Parquet daily metrics, Sobol designs, surrogate models, sensitivity indices / PDPs.
+

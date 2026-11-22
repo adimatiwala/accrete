@@ -82,14 +82,17 @@ fn every_output_is_identical_whatever_the_number_of_jobs() {
         let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(&dir)
             .unwrap()
             .map(|e| e.unwrap().path())
-            .map(|p| {
-                (
-                    p.file_name().unwrap().to_string_lossy().into_owned(),
-                    std::fs::read(&p).unwrap(),
-                )
+            .filter_map(|p| {
+                let name = p.file_name()?.to_str()?.to_string();
+                // runs.sqlite (and WAL/SHM) are not byte-stable across --jobs.
+                if name == "runs.sqlite" || name.starts_with("runs.sqlite-") {
+                    return None;
+                }
+                Some((name, std::fs::read(&p).unwrap()))
             })
             .collect();
         files.sort();
+        assert!(dir.join("runs.sqlite").is_file(), "auto-index present");
         let _ = std::fs::remove_dir_all(&dir);
         files
     };
@@ -366,5 +369,81 @@ fn a_sweep_run_reproduces_from_its_manifest() {
     }
     let design = std::fs::read_to_string(dir.join("sweep_design.json")).unwrap();
     assert!(design.contains("\"base_config\""), "{design}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn run_indexes_itself_and_save_every_writes_periodic_snapshots() {
+    let dir = tmp("index");
+    ok(&accrete(&[
+        "run",
+        "--seed",
+        "4",
+        "--days",
+        "4",
+        "--every",
+        "0",
+        "--save-every",
+        "2",
+        "-o",
+        s(&dir),
+        "--label",
+        "idx",
+    ]));
+    let db = dir.join("runs.sqlite");
+    assert!(db.is_file(), "auto-index after run");
+    assert!(dir.join("idx_seed4_day002.snap.json").is_file());
+    assert!(dir.join("idx_seed4_day004.snap.json").is_file());
+    let m = std::fs::read_to_string(dir.join("idx_seed4_manifest.json")).unwrap();
+    assert!(m.contains("idx_seed4_day002.snap.json"), "{m}");
+    ok(&accrete(&[
+        "run",
+        "--seed",
+        "5",
+        "--days",
+        "2",
+        "--every",
+        "0",
+        "-o",
+        s(&dir),
+        "--label",
+        "idx",
+    ]));
+    let q = accrete(&["index", "query", "-d", s(&dir), "--label", "idx"]);
+    ok(&q);
+    let csv = String::from_utf8_lossy(&q.stdout);
+    assert!(csv.contains("\n4,idx,"), "{csv}");
+    assert!(csv.contains("\n5,idx,"), "{csv}");
+    let sql = accrete(&[
+        "index",
+        "sql",
+        "-d",
+        s(&dir),
+        "SELECT COUNT(*) AS n FROM runs WHERE label = 'idx'",
+    ]);
+    ok(&sql);
+    assert!(
+        String::from_utf8_lossy(&sql.stdout).contains('2'),
+        "{:?}",
+        sql
+    );
+    // Rebuild after deleting a manifest drops the stale row.
+    std::fs::remove_file(dir.join("idx_seed5_manifest.json")).unwrap();
+    ok(&accrete(&["index", "rebuild", "-d", s(&dir)]));
+    let sql = accrete(&[
+        "index",
+        "sql",
+        "-d",
+        s(&dir),
+        "SELECT COUNT(*) AS n FROM runs",
+    ]);
+    ok(&sql);
+    assert!(
+        String::from_utf8_lossy(&sql.stdout).contains('1'),
+        "{:?}",
+        sql
+    );
+    let bad = accrete(&["index", "sql", "-d", s(&dir), "DELETE FROM runs"]);
+    assert_eq!(bad.status.code(), Some(2));
     let _ = std::fs::remove_dir_all(&dir);
 }

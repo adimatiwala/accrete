@@ -11,7 +11,7 @@ Where to look:
 - **`docs/DESIGN.md`**: a module-by-module map of `accrete-core`, plus the tick pipeline.
 - **`README.md`**: a quick start and the headline results table.
 
-**Status:** Weeks 1–4 are built, plus Phase 2 tooling: scarcity rerun (A.18), manifests/`reproduce`/seed ranges/parallel aggregates (A.19), parameter sweeps (A.20), and cross-PR review fixes (A.21). A run index is next (A.10).
+**Status:** Weeks 1–4 are built, plus Phase 2 tooling: scarcity rerun (A.18), manifests/`reproduce`/seed ranges/parallel aggregates (A.19), parameter sweeps (A.20), cross-PR review fixes (A.21), and a SQLite run index with periodic state snapshots (A.22). Still open in A.10: Parquet metrics, Sobol designs, surrogates, sensitivity/PDPs.
 
 ## Commands
 
@@ -71,7 +71,8 @@ cargo run --release -p accrete-cli -- experiments --seed 1 --days 100 -o results
   - **Aggregate file:** the suite also writes `emergence_aggregate.csv`, with per experiment and outcome the mean paired difference (intervention minus control, same seed) and its 95 % t-interval. New outcomes go in `OUTCOMES` in `experiments.rs`.
 - **Parameter sweeps:** `accrete sweep --param section.key=a,b,c` (repeatable; the cartesian product) or `--lhs N --param section.key=lo..hi` (a Latin hypercube from the `Design` RNG stream, `--design-seed`), over `--seed` ranges with `--jobs`. Every point is validated before anything runs. Outputs: `sweep_design.json`, `sweep_runs.csv` (one row per point and seed) and `sweep_points.csv` (per-point means with 95 % intervals); each run writes `pNNN_seedS_*` files and a manifest. Outcomes come from `experiments::OUTCOMES`.
 - **Run manifests:** every run (`run`, `branch`, `experiments`) writes `<label>_seed<N>_manifest.json`, recording the start (fresh seed, or a snapshot file plus the config applied on load), the tick count, the start and final state hashes, the full config, and provenance (version, git commit and dirty flag via `crates/accrete-cli/build.rs`, `Cargo.lock` hash). `accrete reproduce <manifest>` re-runs it and checks the final hash (exit 1 if it differs). Any new way of running the simulation must go through `run::drive` or write a manifest itself. Manifests leave out `--jobs` and other settings that can't change results, so outputs stay identical across job counts. `crates/accrete-cli/tests/cli.rs` drives the real binary to check this end to end.
-- **Snapshots:** `run --save` writes the final state as `*.snap.json` (gitignored); `run --load` resumes it, and `--set` or `--config` with `--load` turn the resumed run into an intervention. `branch` loads one snapshot twice, runs a control and an intervention (`--drought DAY:DAYS:X:Y:RADIUS:SEVERITY`, `--set`, `--config-b`), and writes a per-day `*_compare.csv`. `--disrupt DAY:DAYS:block|slowF:X:Y:RADIUS` or `DAY:DAYS:block|slowF:busiest:N` schedules a route disruption (config `[[disruption.scripted]]`).
+- **Run index:** writing a manifest also upserts into `<out>/runs.sqlite` (bundled SQLite via `rusqlite`). `accrete index rebuild -d DIR` re-walks manifests (and drops rows whose files are gone); `accrete index query` filters by `--seed` / `--label` / `--commit` / `--digest` as CSV; `accrete index sql` runs read-only `SELECT`/`WITH`/`PRAGMA`. The index stores key config knobs and final metrics totals when the CSV is present. Schema version is in `meta`; bump `SCHEMA_VERSION` if the layout changes.
+- **Snapshots:** `run --save` writes the final state as `*.snap.json` (gitignored); `run --load` resumes it, and `--set` or `--config` with `--load` turn the resumed run into an intervention. `run --save-every N` writes mid-run state snapshots (`<label>_seed<S>_day<D>.snap.json`) and lists them in the manifest. `branch` loads one snapshot twice, runs a control and an intervention (`--drought DAY:DAYS:X:Y:RADIUS:SEVERITY`, `--set`, `--config-b`), and writes a per-day `*_compare.csv`. `--disrupt DAY:DAYS:block|slowF:X:Y:RADIUS` or `DAY:DAYS:block|slowF:busiest:N` schedules a route disruption (config `[[disruption.scripted]]`).
 - **`--set section.key=value`** overrides any config value (repeatable).
 - **`--check`** runs the conservation and bounds checks every tick. It's slow but catches ledger bugs.
 - **Baselines:** `--set sim.agent_kind=random` or `--set sim.agent_kind=omniscient`, for evaluation only. Random agents pick a valid option at random; omniscient agents use the normal decision logic with perfect knowledge (whole-map terrain, the nearest resources of each type, true path levels and route costs) within the same memory limits, and ignore `memory.enabled`. Wherever decision code reads a belief about the world, go through `decision::omniscient` / `decision::believed_path` (or choose the `Omniscient` belief), so the baseline stays consistent.
@@ -86,7 +87,7 @@ cargo run --release -p accrete-cli -- experiments --seed 1 --days 100 -o results
 Four crates:
 - **`accrete-core`:** the whole simulation. It has no graphics or OS-specific code, and its only dependencies are `rand_chacha`, `serde`, `serde_json` and `toml`.
 - **`accrete-viz`:** overlay colours, shared so that both front ends draw identical pictures.
-- **`accrete-cli`:** the headless `accrete` binary, built on `clap` and `png`.
+- **`accrete-cli`:** the headless `accrete` binary, built on `clap`, `png` and bundled `rusqlite` (run index).
 - **`accrete-viewer`:** the macroquad viewer.
 
 Both front ends depend on `core` and `viz`, and nothing depends on them.

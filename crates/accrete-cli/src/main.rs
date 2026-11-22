@@ -15,6 +15,7 @@
 mod branch;
 mod experiments;
 mod image;
+mod index;
 mod manifest;
 mod parallel;
 mod run;
@@ -82,6 +83,11 @@ enum Cmd {
         /// Render a map with agents and homes every N days (0 = only the end).
         #[arg(long, default_value_t = 0)]
         snap_every: u32,
+        /// Write a state snapshot (`*.snap.json`) every N days after the day
+        /// completes (0 = none). Day 0 / the load day is not snapshotted;
+        /// use `--save` for a final snapshot. Distinct from `--snap-every` (PNG maps).
+        #[arg(long, default_value_t = 0)]
+        save_every: u32,
         /// Check resource conservation and bounds every tick (slow).
         #[arg(long)]
         check: bool,
@@ -156,6 +162,11 @@ enum Cmd {
     Reproduce {
         /// A `*_manifest.json` written by run, branch or experiments.
         manifest: PathBuf,
+    },
+    /// Query or rebuild the SQLite index of run manifests (`runs.sqlite`).
+    Index {
+        #[command(subcommand)]
+        cmd: IndexCmd,
     },
     /// Load a snapshot and run a control and an intervention side by side.
     Branch {
@@ -242,6 +253,48 @@ enum Cmd {
     },
 }
 
+#[derive(Subcommand)]
+enum IndexCmd {
+    /// Walk a directory for `*_manifest.json` and upsert them into the index.
+    /// Scans `dir` and one level of subdirectories (not deeper).
+    Rebuild {
+        /// Directory that holds manifests (and usually the DB).
+        #[arg(short, long, default_value = "results")]
+        dir: PathBuf,
+        /// Index path (default: `<dir>/runs.sqlite`).
+        #[arg(long)]
+        db: Option<PathBuf>,
+    },
+    /// List indexed runs as CSV (filters are ANDed).
+    Query {
+        #[arg(short, long, default_value = "results")]
+        dir: PathBuf,
+        #[arg(long)]
+        db: Option<PathBuf>,
+        #[arg(long)]
+        seed: Option<u64>,
+        #[arg(long)]
+        label: Option<String>,
+        /// Match a git commit prefix.
+        #[arg(long)]
+        commit: Option<String>,
+        /// Exact config digest (hex).
+        #[arg(long)]
+        digest: Option<String>,
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
+    /// Run a read-only SQL statement against the index.
+    Sql {
+        #[arg(short, long, default_value = "results")]
+        dir: PathBuf,
+        #[arg(long)]
+        db: Option<PathBuf>,
+        /// SELECT / WITH / PRAGMA only.
+        sql: String,
+    },
+}
+
 /// Print an error and exit with status 2 (bad arguments).
 fn fail(msg: &str) -> ! {
     eprintln!("error: {msg}");
@@ -271,6 +324,7 @@ fn main() {
             out,
             every,
             snap_every,
+            save_every,
             check,
             sets,
             label,
@@ -296,6 +350,7 @@ fn main() {
                 out: &out,
                 every,
                 snap_every,
+                save_every,
                 label: &label,
                 timelapse: &timelapse,
                 save: save.as_deref(),
@@ -444,6 +499,32 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Cmd::Index { cmd } => match cmd {
+            IndexCmd::Rebuild { dir, db } => index::run_rebuild(dir, db),
+            IndexCmd::Query {
+                dir,
+                db,
+                seed,
+                label,
+                commit,
+                digest,
+                limit,
+            } => {
+                let db = db.unwrap_or_else(|| index::default_db(&dir));
+                index::run_query(index::QueryArgs {
+                    db,
+                    seed,
+                    label,
+                    commit,
+                    digest,
+                    limit,
+                });
+            }
+            IndexCmd::Sql { dir, db, sql } => {
+                let db = db.unwrap_or_else(|| index::default_db(&dir));
+                index::run_sql(db, sql);
+            }
+        },
         Cmd::Branch {
             load,
             days,
