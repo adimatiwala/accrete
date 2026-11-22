@@ -73,6 +73,7 @@ impl SobolSeq {
         for d in 1..dims {
             let (s, a, m) = JOE_KUO[d - 1];
             let s = s as usize;
+            #[allow(clippy::needless_range_loop)] // the recurrence reads v[d][i - k] and m[i]
             for i in 0..BITS as usize {
                 if i < s {
                     v[d][i] = m[i] << (BITS - 1 - i as u32);
