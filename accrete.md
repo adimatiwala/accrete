@@ -1468,3 +1468,20 @@ Phase 2 campaigns leave many manifests on disk. This entry makes them queryable 
 
 **Still deferred from A.10:** Parquet daily metrics, Sobol designs, surrogate models, sensitivity indices / PDPs.
 
+
+### A.23 Research program (docs)
+
+`docs/research/PROGRAM.md` turns Phase 2 from "run more seeds" into a research program. It records why the emergent structure so far is thin: aggregation is kinship, nothing is at stake under scarcity, trade has no gains, nothing rewards specialists, and there is no culture. It states eight falsifiable hypotheses (H1–H8), each with its mechanism, prediction, metric and experiment.
+
+It also covers:
+* the measurement additions (the Observatory);
+* experiment protocols (E1–E8) and statistical standards: seeds 1–10, paired 95 % intervals, a primary outcome per experiment, equilibrium checks;
+* designs for the two missing mechanisms: tools and crafting (comparative advantage and a production chain), and payoff-biased social learning;
+* the PR roadmap (A.24–A.28).
+
+**Decisions:**
+* **No new machinery without its metric and its ablation.** Every mechanism PR ships with the metric that detects its effect and a switch that turns it off.
+* **Phase diagrams over anecdotes.** Results are response surfaces across seeds.
+* **Agriculture is deferred** until the current regimes are mapped, so its effect can be measured against a known baseline.
+
+**Verification:** documentation only; no code or results changed.
