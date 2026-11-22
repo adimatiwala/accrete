@@ -2,12 +2,51 @@ name: ci
 
 # Bit-identical results are required on macOS (Apple Silicon) and Windows.
 # The same golden hashes in tests/golden/ are checked on both.
+#
+# Path filtering: the `changes` job decides from the changed files what has to
+# run (see .github/scripts/ci-changes.sh). Docs-only changes skip the Rust job;
+# front-end-only changes skip the slow debug pass of accrete-core. Pushes to
+# main and manual runs always run everything. `ci-result` always reports, so
+# it is the one check to require in branch protection.
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      core: ${{ steps.filter.outputs.core }}
+      viewer: ${{ steps.filter.outputs.viewer }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Detect what changed
+        id: filter
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          case "$EVENT" in
+            pull_request) base="$PR_BASE" ;;
+            push)
+              if [ "$REF" = refs/heads/main ]; then
+                base=""   # main always runs everything
+              else
+                base=$(git merge-base origin/main HEAD 2>/dev/null || true)
+              fi ;;
+            *) base="" ;;
+          esac
+          echo "Comparing ${base:-<none: run everything>}..HEAD"
+          bash .github/scripts/ci-changes.sh "$base" HEAD | tee -a "$GITHUB_OUTPUT"
+
   test:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -24,8 +63,27 @@ jobs:
       - name: Test (release)
         run: cargo test --release -p accrete-core -p accrete-cli -p accrete-viz
       - name: Test (debug; must match the same golden hashes)
+        if: needs.changes.outputs.core == 'true'
         run: cargo test -p accrete-core
       - name: Build viewer
+        if: needs.changes.outputs.viewer == 'true'
         run: cargo build --release -p accrete-viewer
       - name: Headless smoke run
         run: cargo run --release -p accrete-cli -- run --seed 1 --days 30 --every 10 --check -o results
+
+  ci-result:
+    needs: [changes, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          echo "changes: $CHANGES, test: $TEST"
+          [ "$CHANGES" = success ] || exit 1
+          case "$TEST" in
+            success | skipped) ;;   # skipped = nothing Rust-related changed
+            *) exit 1 ;;
+          esac

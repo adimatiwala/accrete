@@ -36,6 +36,14 @@ CI (`.github/workflows/ci.yml`) runs the same steps on `macos-latest` and `windo
 5. a viewer build
 6. a headless smoke run: `cargo run --release -p accrete-cli -- run --seed 1 --days 30 --every 10 --check -o results`
 
+**Path filtering.** A `changes` job runs `.github/scripts/ci-changes.sh BASE HEAD` to decide what is needed:
+- **Docs only** (`*.md`, `docs/`, `.claude/`, the PR template, `.gitignore`): the Rust job is skipped.
+- **`accrete-cli` only:** step 4 (debug tests) and step 5 (viewer build) are skipped.
+- **`accrete-viz` or `accrete-viewer` only:** step 4 is skipped.
+- **Anything else,** including core, `configs/`, `tests/`, the toolchain, dependencies, `.gitattributes`, CI files, and **any path the script doesn't recognise**: everything runs.
+
+Pushes to `main` and manual runs always run everything. The `ci-result` job always reports, and treats a skipped Rust job as a pass, so it is the one check to require in branch protection. When you add a new crate or a new kind of file, give it a category in the script; otherwise it falls back to running everything. Try the script locally with `bash .github/scripts/ci-changes.sh origin/main HEAD`.
+
 Running the simulation:
 
 ```bash
@@ -130,6 +138,7 @@ Cross-cutting ideas that take several files to see:
 | If you change… | Update |
 |---|---|
 | Build, test, lint or CI steps; the toolchain; workspace members or crate dependencies | **Commands**, **Architecture** (crates) |
+| CI path categories in `.github/scripts/ci-changes.sh` (for example, a new crate) | **Commands** (path filtering) |
 | `accrete` subcommands or flags, or viewer flags and keys | **Commands** |
 | The tick pipeline order in `engine.rs`, or the `Ctx` rules for what decisions may read | **Architecture**, and `docs/DESIGN.md` too |
 | `rng::Stream` ids, hashing, golden-file workflow, or banned methods in `clippy.toml` | **Rules** 1–3 |
