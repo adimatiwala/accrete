@@ -2051,12 +2051,11 @@ fn observe_omniscient(a: &mut Agent, world: &World, c: &Config, tick: u64) {
         };
         base + world.pile_at(p).map_or(0.0, |pl| pl.goods.get(res))
     };
-    let cooling = |p: Pos, res: Resource| {
-        a.memory
-            .resources
-            .iter()
-            .any(|m| m.pos == p && m.resource == res && m.unreachable_until > tick)
-    };
+    // Use failed_targets, not the resource pool: set_resources replaces the
+    // pool, so a cooldown stored only on a resource entry would be wiped on
+    // the next re-observe (every `reobserve_ticks`) instead of lasting the
+    // full unreachable window. mark_unreachable always records failed_targets.
+    let cooling = |p: Pos, _res: Resource| a.memory.is_failed_target(p, tick);
     // How many entries each pool can actually get: its size, or fewer if the
     // world holds fewer eligible tiles.
     let mut available = [0usize; 3];
@@ -2379,6 +2378,19 @@ home = 0
             .collect();
         assert_eq!(food.len(), 1, "the pool is refilled");
         assert_ne!(food[0].pos, nearest, "the unreachable place was skipped");
+        // A later re-observe inside the window must still skip it (the cooldown
+        // lives in failed_targets, not in the replaced resource pool).
+        observe_omniscient(&mut a, &sim.world, &c, tick + 6);
+        let food: Vec<_> = a
+            .memory
+            .resources
+            .iter()
+            .filter(|m| m.resource == Resource::Food)
+            .collect();
+        assert_ne!(
+            food[0].pos, nearest,
+            "cooldown must survive a re-observe inside the window"
+        );
         // After the cooldown it is offered again.
         observe_omniscient(&mut a, &sim.world, &c, tick + 200);
         let food: Vec<_> = a
