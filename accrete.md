@@ -3,7 +3,7 @@
 **An emergent civilization simulator**  
 *A world that builds itself, one decision at a time.*
 
-**Status:** Implementation blueprint · **Target:** four-week laptop-scale MVP · **Stack:** Rust + macroquad
+**Status:** Implementation blueprint · **Target:** four-week laptop-scale MVP · **Platforms:** macOS (Apple Silicon) and Windows, fully offline · **Stack:** Rust + macroquad
 
 ## 1. Vision
 
@@ -24,19 +24,36 @@ The aim is an experimental simulation platform rather than a game or an economic
 
 **Scientific honesty:** The emergence of settlements, trade, or roads is a hypothesis to test, not a guaranteed feature. If a behavior does not emerge, investigate and report that outcome rather than injecting scripted formation events.
 
+### Design principle: define motives, never outcomes
+
+Every rule in Accrete describes what an **individual agent wants, knows, or can do**. No rule describes a **collective result**.
+
+| ✅ Motive (allowed) | ❌ Outcome (not allowed) |
+|---|---|
+| "I value my household's time a little, weighted by my sociability." | "Build a road between the village and the forest." |
+| "I prefer trading with agents who treated me well before." | "Form a market when 10 agents live nearby." |
+| "Living in a crowded home makes resting less effective." | "Split a settlement when it reaches 30 agents." |
+| "Paving this tile saves me and my household time." | "Connect every settlement to its nearest neighbour." |
+
+**Test for any new rule:** could it be written as one agent's preference, perception, or ability, using only that agent's local knowledge? If it needs to know about a settlement, a road network, or the whole population, it is scripting an outcome and must not be added.
+
+Agents are **self-interested in a broad sense**: they act for their own benefit, plus limited concern for their household and a memory of how others treated them. Research on agent-based models, from Schelling's segregation model to Sugarscape and Axelrod's cooperation experiments, shows that this is enough to produce trade, clustering, specialization, and cooperation without central coordination.
+
+Pure selfishness is expected to fail at **public goods** such as roads, which cost one agent but help everyone. Accrete therefore includes three agent-level motives (household benefit, reciprocity, and tile-by-tile building) and treats them as experimental conditions. Turning them off, so agents become strictly selfish, is a valid experiment, and "no roads form under pure self-interest" is a valid result.
+
 ## 2. Scope and constraints
 
 | Dimension | MVP | Stretch goal |
 |---|---|---|
 | World | 128×128 tiles | 256×256 with chunking |
-| Initial agents | 100 | 500–1,000 |
+| Initial agents | 100, with births and deaths (safety cap 1,000) | 500–1,000 initial |
 | Resources | Food, wood, stone | Specialized goods and production chains |
 | Agent intelligence | Interpretable utility scoring, local perception, memory | Learning, social knowledge exchange |
 | World model | 2D terrain, biomes, rivers | Seasons, more sophisticated hydrology |
 | Social systems | Barter, homes, emergent clusters | Institutions and specialization |
 | Transportation | Traffic-worn trails, improved roads | Capacity, congestion, collective investment |
 | Experiments | Snapshots, drought, route disruption | Parameter sweeps, uncertainty estimates |
-| Execution | Windows laptop, CPU, offline | Parallel batch execution |
+| Execution | macOS (Apple Silicon) and Windows laptops, CPU, offline | Parallel batch execution; Linux |
 
 **Explicitly excluded from the four-week MVP:** LLM agents, neural network training, 3D graphics, politics, warfare, detailed currencies, tax systems, multiplayer, and cloud services.
 
@@ -74,6 +91,9 @@ Keep the simulation entirely independent of rendering:
 ```text
 accrete/
 ├── Cargo.toml                 # workspace manifest
+├── rust-toolchain.toml        # pinned compiler for macOS + Windows
+├── clippy.toml                # bans non-deterministic float methods
+├── .gitattributes             # normalize text line endings
 ├── accrete.md                 # this specification
 ├── README.md                  # optional short project introduction
 ├── configs/
@@ -92,11 +112,44 @@ accrete/
 │   └── accrete-cli/
 │       └── src/main.rs
 ├── tests/
+│   └── golden/               # committed state hashes, shared by both OSes
 ├── experiments/
 └── results/                  # gitignored generated outputs
 ```
 
-**Libraries:** `macroquad` (2D viewer), `noise` (terrain), `rand_chacha` (seeded RNG), `serde`/`serde_json` (serialization), `clap` (CLI), and optionally `toml` (configuration). Pin dependency versions in `Cargo.lock`.
+**Libraries:** `macroquad` (2D viewer), `libm` (deterministic math), `rand_chacha` (seeded RNG), `serde` with `postcard` or `bincode` (snapshots), `serde_json` with `float_roundtrip` (metrics and readable exports), `clap` (CLI), and optionally `toml` (configuration). Terrain noise is implemented in `accrete-core` rather than taken from the `noise` crate; see *Cross-platform determinism*. Commit `Cargo.lock` to pin dependency versions.
+
+### Platform support
+
+Accrete must build and run on both **macOS on Apple Silicon** (primary development machine: MacBook Pro M1 Pro) and **Windows 10/11 x86-64**, with no network access at runtime.
+
+- **Toolchain:** stable Rust pinned with a `rust-toolchain.toml`, so both machines use the same compiler version. Targets: `aarch64-apple-darwin` and `x86_64-pc-windows-msvc`.
+- **Offline:** the viewer and CLI never make network calls, and nothing depends on a cloud service, account, or telemetry. Dependencies are downloaded once with `cargo fetch`; after that, build with `cargo build --offline`. Optionally run `cargo vendor` to commit dependencies so a fresh machine can build with no internet.
+- **No platform-specific code in `accrete-core`.** It must be pure Rust with no OS APIs, no system libraries, and no conditional compilation per platform. Platform differences belong only in the viewer and CLI, and macroquad already handles windowing on both OSes.
+- **File paths:** use `std::path::PathBuf` and `Path::join`, never hard-coded `/` or `\` separators. Configs, snapshots, and results are stored relative to the working directory or to a path passed on the command line.
+- **File formats:** snapshots and metrics use UTF-8 JSON, TOML, or CSV, written with `\n` line endings, so files created on one OS load on the other. A `.gitattributes` file normalizes line endings for text files in the repo.
+- **Verification:** each weekly milestone is built and tested on both macOS and Windows before it is considered done. Because results must be bit-identical across OSes, a CI workflow running `cargo test --workspace` on GitHub Actions `macos-latest` (Apple Silicon) and `windows-latest` is strongly recommended. It catches platform drift on every push, even when no Windows machine is at hand. CI is only a development aid: Accrete itself must still build and run offline.
+
+### Cross-platform determinism (decided: bit-identical)
+
+The same seed, config, and Accrete version must produce **bit-identical simulation state** on macOS (Apple Silicon) and Windows (x86-64). That includes the state hash at every tick, snapshot contents, and exported metrics. A snapshot saved on either OS must resume on the other and continue identically.
+
+**Approach:** keep `f32`/`f64`, but use only float operations that are guaranteed identical on both platforms. In Rust, `+ - * /`, `sqrt`, comparisons, `floor`/`ceil`/`round`/`trunc`, `abs`, `min`/`max`, and `as` conversions are exactly specified by IEEE 754. They give the same bits on ARM64 and x86-64, because Rust never uses x87 floating point on x86-64 and never fuses multiply-adds implicitly. Fixed-point arithmetic was considered and rejected, because it makes the code much harder to write and to read.
+
+Rules for `accrete-core` (the viewer may use any float operations, since rendering never feeds back into the simulation):
+
+- **No `std` transcendental functions.** `sin`, `cos`, `tan`, `exp`, `ln`, `log*`, `powf`, `powi`, `hypot`, `atan2`, `tanh`, `cbrt`, and similar call the platform's math library, which differs between macOS and Windows. Use the pure-Rust [`libm`](https://crates.io/crates/libm) crate instead, which gives identical results everywhere, or avoid these functions altogether.
+- **No `mul_add`**, no fast-math, and no `-C target-cpu=native` or other CPU-specific flags in the workspace.
+- **Own noise implementation.** Don't use the `noise` crate in the simulation, because its internals are not audited for these rules. Write a small seeded value or gradient noise in `accrete-core` using only the permitted operations.
+- **Fixed order for all float reductions.** Sum, average, and accumulate in a defined iteration order, never through parallel reductions or unordered collections. Parallelism is allowed only between independent runs (for example, one seed per thread), never inside one simulation.
+- **Random numbers:** use `rand_chacha::ChaCha8Rng` streams. Convert raw `u32`/`u64` output to floats and ranges with helpers written in `accrete-core`, rather than `rand`'s distributions, whose exact outputs may change between `rand` releases.
+- **Explicit integer widths.** Use `u32`/`u64`/`i32` in simulation state rather than `usize` wherever a value is serialized or hashed.
+- **Sorting floats:** use `f32::total_cmp`. Treat NaN as a bug: assert in debug builds that state values are finite.
+- **Stable hashing:** compute the state hash with a fixed, documented algorithm (such as FNV-1a 64 written in `accrete-core`, or the `blake3` crate) over a canonical byte encoding: little-endian integers and floats as `to_bits()`, written in a fixed field order. Never use `std::collections::hash_map::DefaultHasher`, whose output is not guaranteed to stay the same between Rust versions.
+- **Exact snapshot round-trips.** Floats must reload to the same bits. Use a binary format such as `postcard` or `bincode` for snapshots, or `serde_json` with its `float_roundtrip` feature enabled. Exported metrics in CSV and JSON are for humans and plotting, and are not used to resume a run.
+- **Enforce with lints:** a `clippy.toml` `disallowed-methods` list bans the `std` transcendentals and `mul_add` in `accrete-core`, so a violation fails `cargo clippy`.
+
+**Guarantee scope:** bit-identical results hold for the same Accrete commit and `Cargo.lock`. Updating dependencies or the pinned toolchain may change results; when that happens, regenerate the golden hashes deliberately and note it in the commit message.
 
 ### Engine rules
 
@@ -119,10 +172,23 @@ struct Tile {
     moisture: f32,
     fertility: f32,
     biome: Biome,
+    is_river: bool,
+    river_distance: u8,      // tiles to nearest river tile, capped
     food: f32,
+    food_capacity: f32,
     wood: f32,
-    stone: f32,
+    wood_capacity: f32,
+    stone: f32,              // finite deposit, never regenerates
     traffic: f32,
+    path_level: PathLevel,   // None, Trail, or Road
+}
+
+struct Home {
+    position: Position,
+    residents: Vec<AgentId>,         // kept sorted for deterministic iteration
+    chests: Vec<Inventory>,          // up to 3, each 200 weight units
+    shelter_level: u8,               // 0–2
+    over_capacity_since: Option<u64>,
 }
 
 struct Agent {
@@ -131,11 +197,17 @@ struct Agent {
     hunger: f32,
     energy: f32,
     health: f32,
-    inventory: Inventory,
-    memory: AgentMemory,
-    traits: Personality,
+    age_ticks: u64,          // ticks since birth (or since world start for initial agents)
+    frailty: f32,            // permanent wear from prolonged hunger, exhaustion, or low health
+    last_birth_tick: Option<u64>,
+    parent: Option<AgentId>,
+    inventory: Inventory,    // limited by carry weight
+    movement_points: u32,
+    memory: AgentMemory,     // fixed-size: known-tile bitset + bounded lists
+    traits: Personality,     // curiosity, caution, sociability, diligence
+    skills: Skills,          // aptitude + practice for food, wood, stone
     goal: Goal,
-    home: Option<Position>,
+    home: Option<HomeId>,
 }
 
 struct Simulation {
@@ -146,7 +218,58 @@ struct Simulation {
 }
 ```
 
-Suggested initial actions: `Move`, `Explore`, `GatherFood`, `GatherWood`, `GatherStone`, `Eat`, `Rest`. Add `EstablishHome`, `Trade`, and `ImproveTrail` only after survival mechanics work.
+Actions by week:
+- **Week 2 (survival and households):** `Move`, `Explore`, `GatherFood`, `GatherWood`, `GatherStone`, `Eat`, `Rest`, `EstablishHome`, `BuildStorage`, `Deposit`, `Withdraw`, `Reproduce`.
+- **Week 3 (social and infrastructure):** `Trade`, `ImproveTrail`, `ImproveShelter`.
+
+All defaults below are starting values for tuning, set in the config file, not fixed constants.
+
+### Population dynamics: aging, death, and birth
+
+Population changes only through individual agent state. Nothing creates or removes agents to reach a target.
+
+**Compressed lifespans.** Experiments run about 300 days, so lifespans are compressed enough that one or two generations turn over within a run. Defaults, all set in the config in days and converted to ticks in one place: maturity at **40 days**, elder age at **150 days**, so that most agents die of age around **200–250 days** depending on frailty.
+
+**Health ceiling.** An agent's health can never recover above its ceiling:
+
+```text
+health_ceiling = clamp(1.0 − age_decline(age) − frailty, 0.0, 1.0)
+age_decline(age) = 0                                         if age < elder_age
+                 = (age − elder_age) × age_decline_per_day   otherwise
+```
+
+- `age_decline` is piecewise linear, so it needs only the operations allowed by the bit-identical rules.
+- `frailty` increases by a configured amount for each tick the agent spends very hungry, exhausted, or at low health. It never decreases. Prolonged deprivation therefore shortens life, and an agent in a stable, well-fed home lives longer.
+- Ordinary `health` still rises and falls with hunger, energy, and rest, but stays at or below `health_ceiling`.
+
+**Death has exactly two causes, both deterministic, with no random death roll:**
+1. **Deprivation:** `health` reaches 0 from unmet needs.
+2. **Old age and wear:** `health_ceiling` reaches 0.
+
+Each death is logged with its cause and the contributions of age and frailty, for example "ceiling reached 0: 70% age, 30% frailty from 41 days hungry", and the inspector shows this for dead agents.
+
+**Reproduction (`Reproduce` action).** An agent may reproduce only if all of the following hold:
+- its age is between maturity and elder age;
+- it has a home and is at that home;
+- its `health` is within a configured margin of its `health_ceiling`;
+- it carries food above a configured surplus threshold, or its home's chests do;
+- at least the reproduction cooldown (default **30 days**) has passed since its last birth;
+- the population is below the safety cap;
+- a roll from the dedicated `births` RNG stream succeeds.
+
+When the agent is eligible, `Reproduce` is scored like any other utility option, so a hungry agent will not choose it over eating; the `births` roll happens only if the agent chooses it. A successful birth has these results:
+- The newborn appears at the parent's home. It receives a configured amount of food from the parent, logged as a transfer, and the parent pays an energy cost.
+- The newborn inherits part of the parent's memories (see *Memory*), keeping their freshness timestamps, so it never knows anything the parent didn't.
+- Its personality traits are the parent's traits plus small variations drawn from the `births` stream.
+- Until maturity, the agent is a **juvenile**: it gathers at a reduced rate (default 50%) and cannot reproduce.
+
+**Initial agents** start as adults, with seeded starting ages spread between maturity and elder age, so they don't all age out at the same time.
+
+**Deterministic births:** births are decided in the conflict-resolution phase. New agents receive IDs in ascending order of their parent's ID within a tick, and are added to the agent list only at the end of the tick, so they act from the next tick onward.
+
+**Resource conservation:** when an agent dies, all of its inventory goes into its home's chests, or onto the tile where it died if it had no home or no chest space, logged as a transfer. It is removed from its home's residents, and a home with no residents left is marked vacant. Agents are never removed with resources still attached.
+
+**Safety cap:** the population is capped at **1,000** agents (configurable). At the cap, `Reproduce` is unavailable and each blocked birth is logged with a warning. The cap never kills agents. If a run hits the cap, the run's results are flagged, because reaching it usually means the parameters are mistuned.
 
 ### Decision policy
 
@@ -162,7 +285,197 @@ For debugging, record the chosen action, top competing actions, and the major ut
 
 ### Resource conservation
 
-Every resource change should correspond to a defined event: regeneration, gathering, consumption, transfer, construction, or destruction. Write invariant checks so an agent cannot gather more than a tile contains or trade more than its inventory holds.
+Every resource change should correspond to a defined event: regeneration, gathering, consumption, transfer, construction, or destruction (including spoilage). Write invariant checks so an agent cannot gather more than a tile contains, carry more than its carry limit, put more into storage than it holds, or trade more than its inventory holds.
+
+### Time and movement
+
+- **1 tick = 1 hour; 1 day = 24 ticks.** Day 100 is tick 2,400 and day 300 is tick 7,200. All rates in the config are written per day (or per hour where noted) and converted to per-tick values in one place.
+- **1 tile ≈ 1 km × 1 km,** so the 128×128 map is a region of about 128 km × 128 km. Crossing a plains tile in one hour is a loaded foraging pace rather than a brisk walk (about 4 km/h); a finer tick is a stretch goal if travel realism matters. The sight radius of 6 tiles is therefore about 6 km.
+- **Several homes can share a tile,** up to 8 per tile, since a 1 km² tile can hold a hamlet.
+- **Movement uses integer movement points (MP),** so travel time follows terrain without float rounding. A moving agent gains 10 MP per tick, and entering a tile costs that tile's MP. Unused MP carries over to the next tick.
+
+| Terrain | MP to enter | Time per tile |
+|---|---|---|
+| Plains | 10 | 1 tick |
+| Forest | 20 | 2 ticks |
+| Hills | 30 | 3 ticks |
+| Mountains | 60 | 6 ticks |
+| River tile (fording) | terrain cost + 20 | +2 ticks |
+| Ocean | impassable | — |
+
+Worn trails multiply the cost by 0.8 and improved roads by 0.5 (Week 3), rounded down, with a minimum of 5 MP. Integer MP keeps movement exactly reproducible.
+
+### Resources and fertility
+
+Resources are deliberately uneven across the map, so that different places are good for different things and agents have reasons to travel, settle, and trade.
+
+**Fertility** (0–1) decides where food grows:
+
+```text
+fertility = clamp(biome_base + 0.3 × moisture + river_bonus(distance_to_river), 0, 1)
+```
+
+- `biome_base`: plains 0.3, forest 0.2, hills 0.1, mountains 0, ocean 0.
+- `river_bonus` by distance in tiles from the nearest river tile: 1 → +0.35, 2 → +0.25, 3 → +0.15, 4 → +0.05, beyond 4 → 0. River tiles themselves grow no food.
+- Distance to river is computed once at world generation with a breadth-first search, and stored on each tile.
+
+**Food (renewable, wild crops).**
+- A tile grows food only if its fertility is at least 0.15.
+- A seeded **crop-patch noise field** makes food patchy rather than uniform: a patch factor of 1.5 for rich patches (noise above 0.65), 1.0 for average tiles, and 0.4 for poor ones (noise below 0.35).
+- `food_capacity = 20 × fertility × patch_factor` units.
+- Tiles start at 80% of capacity.
+- Food regrows once per day: `food += 0.15 × fertility × (food_capacity − food)`. Fertile, depleted tiles near rivers recover in about a week, while poor tiles recover slowly. Food never exceeds capacity through growth.
+
+**Wood (renewable, slow).** Forest tiles hold up to 40 units, and plains tiles with moisture above 0.5 hold up to 5 (scattered trees). Wood regrows once per day: `wood += 0.02 × (capacity − wood)`, so a clear-cut forest takes months to recover.
+
+**Stone (finite).** A seeded deposit noise field places stone in clusters on hills and mountains: tiles with deposit noise above 0.6 get 50–200 units, drawn from the world-generation RNG stream. Stone never regenerates.
+
+**Regeneration runs once per day,** at the first tick of each day, rather than every tick. This is cheaper and keeps the result exactly reproducible.
+
+### Needs and eating
+
+| Need | Default behaviour |
+|---|---|
+| Hunger (0 = full, 1 = starving) | Rises 0.33 per day. Eating 1 food unit lowers it by 0.165, so an adult needs about **2 food per day**; juveniles need about 1. |
+| Energy (0 = exhausted, 1 = rested) | Falls 0.05 per active tick. Resting restores 0.1 per tick, or 0.125 at home. |
+| Health (0 = dead) | When very hungry (hunger at least 0.7) or exhausted (energy 0), health falls 0.05 per day and frailty builds up. At hunger 1.0, health falls 0.15 per day. Otherwise health recovers toward the health ceiling. |
+
+Agents eat **only from their own inventory.** To eat stored food, they first `Withdraw` it from storage at home.
+
+### Inventory and storage
+
+**Carry limit:** 30 weight units for adults and 15 for juveniles. Weights are food 1, wood 2, and stone 3, so an adult can carry 30 food (about 15 days of eating), 15 wood, 10 stone, or a mix.
+
+**Spoilage:** carried food loses 2% per day, and stored food 0.5% per day. Spoilage is logged as destruction. It stops agents from hoarding forever, and makes storage and nearby food sources worth something.
+
+**Storage chests** let agents keep more than they can carry:
+- `BuildStorage` costs 10 wood and 6 ticks of work. It places a chest on the agent's home tile.
+- A chest holds 200 weight units, and a home can have up to 3 chests.
+- Every resident of a home can `Deposit` into and `Withdraw` from its chests. Each takes 1 tick. Non-residents have no access, so trade is their only way to get stored goods.
+- Chests stay when residents die or leave. A vacant home keeps its chests and their contents, and whoever establishes a home there next can use them.
+- If a dying agent's home has no chest with room, its inventory is dropped onto the tile as a pile that anyone can gather. Dropped food spoils at the carried rate.
+
+### Observation and line of sight
+
+- Each agent sees a **square** of radius 6 around itself (13×13 tiles).
+- **Terrain height blocks sight.** A tile is visible if no tile between the agent and it, along a Bresenham line, rises above the straight sight line from the agent's eye (its tile elevation plus a small eye height) to the target tile.
+- **Low cost:** terrain never changes, so each tile's visibility pattern is computed once at world generation and stored as a 169-bit mask, which fits in three `u64`s. That is about 384 KB for a 128×128 map, and takes well under a second to compute. Observing then means reading the mask, which is about 169 tile lookups per agent. The masks are rebuilt from the terrain when a snapshot loads, rather than saved.
+- Agents observe again when they move, or every 6 ticks while staying put, so changes such as gathering and regrowth are noticed.
+
+### Memory
+
+Each agent's memory has a fixed size, so memory use and decision time stay bounded as the population grows:
+
+| Memory | Size | Contents |
+|---|---|---|
+| Known tiles | Bitset, 16,384 bits (2 KB) | Tiles the agent has ever seen. Because terrain doesn't change, seeing a tile once tells the agent its terrain. |
+| Resource memories | 64 entries | Position, resource type, amount seen, and the tick it was seen. When full, the entry with the lowest `amount × freshness` is replaced, with ties broken by position. |
+| Changed-tile memories | 32 entries | Tiles where the agent saw a change to the normal terrain, such as a route blocked by a shock or a new road, so its route planning uses what it actually saw. |
+| Social memories (Week 3) | 32 entries | Agents met and a reciprocity score for each, based on trade outcomes (see *Trade rule*). |
+| Frequent tiles (Week 3) | 16 entries | Tiles the agent crossed most in the last 30 days, with crossing counts, used to judge whether paving a tile is worth it. Residents of the same home can see each other's lists. |
+
+That is about 4 KB per agent, or about 4 MB at the 1,000-agent cap, so snapshots stay small and scanning memory during decisions is cheap. Newborns inherit the parent's best 50% of resource memories, and the known tiles within 16 tiles of home.
+
+### Pathfinding and exploration
+
+- Routes use **A\*** over tiles the agent knows and believes passable, with MP costs as the agent believes them to be. Unknown tiles are never part of a planned route, so agents can't use knowledge they don't have.
+- **Exploration** happens through *frontier* tiles: known, passable tiles next to at least one unknown tile. `Explore` picks a frontier tile, weighing distance against the agent's curiosity, and routes there, which reveals new tiles. Agents also always learn about the tiles in their sight square, including when they step next to unknown ground.
+- **Limits:** each A\* search expands at most 4,000 tiles. A route is reused until the agent arrives, finds the path blocked, or changes goal, and is planned again at most every 12 ticks unless blocked.
+
+### Personality traits
+
+Each agent has four traits in the range 0–1. Initial agents draw them from a seeded stream, and newborns get the parent's values ±0.1.
+
+| Trait | What it changes |
+|---|---|
+| **Curiosity** | Exploring unknown land versus using known resources; how far away a frontier it will consider. |
+| **Caution** | How much food it tries to keep in reserve, how much it prefers known routes, and how early it heads home or eats. |
+| **Sociability** | How much it values living with and near others, how much crowding it tolerates, how willing it is to trade, and how much it counts benefits to its household. |
+| **Diligence** | How long it works before resting, and how willing it is to spend time building (storage, trails, shelters). |
+
+### Gathering skill
+
+Separately from personality, each agent has a **skill** for each resource (food, wood, stone):
+- `skill = aptitude + practice`.
+- Aptitude is innate, between 0.7 and 1.3, drawn from a seeded stream. Newborns get the parent's aptitude ±0.1.
+- Practice rises by 0.005 per tick spent gathering that resource, up to +0.3, and falls by 0.001 per day when unused.
+- Base amount gathered per tick at skill 1.0: food 2 units, wood 1.5, stone 1. Juveniles gather at 50%.
+
+Agents who keep gathering the same thing get better at it, so specialization can emerge on its own. Together with uneven resources, this is what gives trade its value.
+
+### Homes, sharing, and crowding
+
+- A **home** is a dwelling on a tile, with a list of residents; a tile holds up to 8 homes. `EstablishHome` founds a home on a passable land tile that isn't a river tile, or joins a known existing home that is below its comfortable capacity. Agents choose using what they know about nearby food, distance to a river, travel cost, how many people live there (weighted by sociability), and crowding.
+- **Newborns** belong to their parent's home. As adults they may stay or move out. Nothing forces them out; crowding does.
+- **Comfortable capacity** is 4 residents, plus 2 for each shelter level, up to 2 levels (Week 3).
+- **Overcrowding cost:** when a home has more residents than its comfortable capacity for more than **7 consecutive days**:
+  - resting there restores 15% less energy for each extra resident, up to 60% less;
+  - every resident's frailty builds up slowly;
+  - nobody in that home can reproduce.
+
+  Because the penalty lowers the value of staying, crowded agents move out on their own, with sociable agents putting up with crowding longer.
+- **Shelter improvement (Week 3):** `ImproveShelter` costs 20 wood, 10 stone, and 12 ticks of work. It adds 2 to the comfortable capacity and 10% to resting recovery.
+
+### Trade rule (Week 3)
+
+- Agents trade only with an agent on the same or a neighbouring tile.
+- Each agent values each good by how much it needs it, comparing what it holds against its reserve target (set by caution) and its current needs.
+- The agent proposing a trade offers a ratio based on its own values. The other agent accepts only if the trade leaves it better off by its own values, after counting the time the trade takes. A trade happens only when both sides gain, and only for goods each side actually holds.
+- Unequal resources (food near rivers, wood in forests, stone in the hills) plus specialized skills create these gains.
+- **Reciprocity:** after each trade, both agents update a reciprocity score for the other in their social memory. The score rises when the partner's share of the total gain was fair (close to half) and falls when the partner took most of it. Agents prefer to approach partners with high scores, need a slightly smaller gain to accept their offers, and need a larger gain to accept offers from partners with low scores. Scores slowly return to neutral over time. This lets cooperation build up through repeated self-interested trades, with no rule about groups or markets.
+
+### Trails and roads
+
+Paths develop at three levels, with different durability and effects:
+
+| Level | How it appears | MP cost | Durability |
+|---|---|---|---|
+| **Raw traffic** | Every crossing adds 1 to the tile's traffic; traffic decays daily (`traffic_next = λ × traffic + crossings`, default λ = 0.95) | Normal | — |
+| **Worn trail** | Forms automatically when traffic rises above a threshold (default 20) | × 0.8 | Fades back when traffic falls below the threshold for 30 days |
+| **Improved road** | Built by an agent with `ImproveTrail`, one tile at a time, on an existing worn trail | × 0.5 | Loses 1 condition point per day without traffic; disappears at 0 (starts at 180) |
+
+**Building is tile-by-tile.** `ImproveTrail` on one tile costs 2 wood, 2 stone, and 4 ticks of work. An agent considers it only for a worn-trail tile it is standing on, and builds when its perceived benefit over the next 30 days exceeds the cost:
+
+```text
+perceived_benefit = time_saved_per_crossing
+                  × (own_expected_crossings
+                     + household_weight × sociability × household_expected_crossings)
+```
+
+- `own_expected_crossings` and `household_expected_crossings` come from the frequent-tile lists of the agent and its home's residents, so the estimate uses only local, shared-household knowledge.
+- `household_weight` defaults to 0.5. Setting it to 0 makes agents strictly selfish.
+- Labour is converted to value at the agent's own current value of time, which is higher when it is hungry or tired, so starving agents don't build roads.
+- Diligence raises an agent's willingness to spend time building.
+
+Roads therefore appear on the heaviest-used tiles first and extend only where use justifies it, without any planner deciding where they go.
+
+### Settlement detection (measurement only)
+
+A **settlement** is a group of occupied homes that meets all of the following, measured once per day:
+
+| Parameter | Meaning | Default | Why |
+|---|---|---|---|
+| **N** | Minimum occupied homes | **5** | A real hamlet is about 5 or more households. |
+| **M** | Minimum total residents | **15** | About 3 people per home; stops a few near-empty homes counting. |
+| **R** | Maximum distance from the group's centre | **3 tiles (≈ 3 km)** | Pre-modern villages and their fields span a few kilometres. |
+| **P** | Minimum time the group must last | **60 days** | About a quarter of an agent's lifespan, and longer than a typical drought, so a temporary camp doesn't count. |
+
+Homes are grouped by linking any two occupied homes within R tiles of each other. A group that meets N and M becomes a *candidate*, and becomes a settlement once it has stayed a candidate for P consecutive days. A settlement keeps its identity while at least half of its homes continue from one day to the next.
+
+**Size classes** for reporting: **hamlet** (meets the thresholds above), **village** (at least 15 homes and 50 residents), and **town** (at least 50 homes and 150 residents). With a population of 100–1,000, a few hamlets and perhaps a village or two are a realistic outcome; a town would be a striking result.
+
+Settlements are only measured; detecting one never changes agent behaviour. Results are also checked with N ∈ {3, 5, 8}, M ∈ {10, 15, 25}, R ∈ {2, 3, 5}, and P ∈ {30, 60, 90}, to show they don't depend on one choice of threshold.
+
+### Random droughts
+
+Droughts happen on their own, through ordinary world mechanics:
+- **Frequency:** checked once per day using a dedicated `weather` RNG stream, with a chance of 1 in 150 per day. That is about one drought every 150 days, roughly once or twice per 300-day run and once or twice per agent lifetime. Lifespans are compressed, so this matches the real-world pattern of a significant regional drought a few times in a lifetime, without happening constantly.
+- **Size:** small to medium, a radius of 6–16 tiles. That covers roughly 1–5% of the map, centred on a random land tile.
+- **Length:** 10–40 days.
+- **Severity:** food regrowth inside the region falls by 30–70%.
+- **Limits:** at most one random drought at a time, and none for 60 days after one ends.
+
+Every drought is logged as a world event with its centre, radius, start, end, and severity, and is shown on the map. Random droughts can be turned off in the config. When a run branches from a snapshot, both branches keep the same `weather` stream, so they get identical random droughts, and the scripted drought in the experiment is the only difference.
 
 ## 5. Week 1 — Procedural world generation
 
@@ -178,7 +491,7 @@ Every resource change should correspond to a defined event: regeneration, gather
 
 ### Day 2: Terrain and biomes
 
-- Generate elevation using seeded multi-octave noise.
+- Generate elevation using seeded multi-octave noise, implemented in `accrete-core` using only deterministic float operations.
 - Generate a separate moisture field.
 - Classify ocean, plains, forest, hills, and mountains using thresholds.
 - Ensure neighboring cells are reasonably continuous; prevent isolated artifacts where practical.
@@ -187,102 +500,111 @@ Every resource change should correspond to a defined event: regeneration, gather
 ### Day 3: Rivers and resources
 
 - Build a simplified downhill river routing algorithm, with explicit treatment of local minima and map boundaries.
-- Place food according to fertility/moisture, wood in forests, and stone in rocky areas.
-- Distinguish renewable resources (food, some wood) from finite deposits (stone).
-- Define passability and travel cost for each biome.
+- Compute distance to the nearest river for every tile, and fertility from biome, moisture, and river proximity, as specified in *Resources and fertility*.
+- Place food using fertility and the crop-patch noise field, wood in forests and moist plains, and clustered finite stone deposits in hills and mountains.
+- Distinguish renewable resources (food, wood) from finite deposits (stone).
+- Define passability and movement-point costs for each terrain type, including river fording.
 
 ### Day 4: Visualization
 
 - Render a 128×128 tile grid using macroquad.
 - Implement pan, zoom, and tile inspection.
-- Add overlay modes: biome, elevation, moisture, food, wood, stone, and passability.
+- Add overlay modes: biome, elevation, moisture, fertility, river distance, food, wood, stone, and movement cost.
 - Add seed input and regenerate control; show seed in the interface.
 
 ### Day 5: Starting positions and validation
 
 - Place 100 initial agents in viable locations; do **not** prebuild cities.
 - Test that spawn positions are traversable and have plausible nearby resources.
-- Add deterministic snapshot tests or state hashing for generation.
+- Precompute the line-of-sight visibility mask for every tile, and test it against a brute-force check on a few tiles.
+- Add a stable state hash for generated worlds, and commit a golden hash for the primary validation seed under `tests/golden/`. The same golden value must pass on macOS and Windows.
 - Benchmark generation time and viewer responsiveness.
 
 **Week 1 deliverable:** A navigable, seeded world map with meaningful terrain and resource distributions.
 
-**Acceptance criteria:** Same seed/config gives the same state; different seeds differ; all tile properties are in valid ranges; rivers obey routing rules; resources obey biome constraints; generation runs headlessly.
+**Acceptance criteria:** Same seed/config gives the same state, bit-identical on macOS and Windows; different seeds differ; all tile properties are in valid ranges; rivers obey routing rules; resources obey biome constraints; generation runs headlessly.
 
-## 6. Week 2 — Individual agents and survival
+## 6. Week 2 — Individual agents, households, and survival
 
-**Goal:** Make 100 agents survive or fail through their own local decisions.
+**Goal:** Make 100 agents survive or fail through their own local decisions, and form households.
 
-### Day 1: Agent state and fixed ticks
+This is the densest week. If it runs over, Week 3 Day 5 (experiments) is the buffer.
 
-- Implement needs: hunger, energy, health.
-- Implement inventory, movement speed, and basic health decline.
-- Add fixed timestep engine and pause/resume/step controls.
-- Ensure agents update consistently regardless of rendering FPS.
+### Day 1: Agent state, needs, and movement
 
-### Day 2: Local observation and memory
+- Implement needs (hunger, energy, health) with the defaults in *Needs and eating*.
+- Implement weight-limited inventories, eating only from inventory, and food spoilage.
+- Implement integer movement points and terrain costs.
+- Add the fixed-timestep engine and pause/resume/step controls; ensure agents update consistently regardless of rendering FPS.
 
-- Give each agent a limited observation radius.
-- Record visited tiles and known food locations, including freshness timestamps.
-- Distinguish actual world state from an agent's belief about it.
-- Prevent the decision system from reading undiscovered resources.
+### Day 2: Observation and memory
 
-### Day 3: Utility-driven behavior
+- Use the precomputed line-of-sight masks for the 13×13 square observation.
+- Implement fixed-size memory: the known-tile bitset, 64 resource memories with freshness-based replacement, and 32 changed-tile memories.
+- Distinguish actual world state from an agent's belief about it, and prevent the decision system from reading undiscovered resources.
 
-- Implement explore, move, gather, eat, and rest.
-- Add utility scoring with tunable weights and simple agent personality traits.
-- Implement movement toward remembered resources and fallback exploration.
+### Day 3: Decisions, traits, and routes
+
+- Implement explore, move, gather, eat, and rest with utility scoring.
+- Add the four personality traits and per-resource gathering aptitude.
+- Implement A\* over known passable tiles, frontier-based exploration, route caching, and the search limits.
 - Prevent rapid goal switching from creating movement loops.
 
-### Day 4: Resource conflicts and migration
+### Day 4: Conflicts, regrowth, homes, and storage
 
 - Resolve simultaneous claims on the same tile without duplicating resources.
-- Add food regeneration, consumption, and death from unmet needs.
+- Add daily regrowth of food and wood.
 - Allow agents to abandon depleted regions and search elsewhere.
-- Add a basic home preference or remembered safe location; full home construction is Week 3.
+- Implement `EstablishHome` (founding or joining a home) and shared residence.
+- Implement storage chests with `BuildStorage`, `Deposit`, and `Withdraw`.
 
-### Day 5: Agent inspection and tests
+### Day 5: Population dynamics, inspection, and tests
 
-- Clicking an agent reveals needs, inventory, remembered places, goal, and action score breakdown.
+- Implement aging, frailty, the health ceiling, and both causes of death, as specified in *Population dynamics*.
+- Implement `Reproduce` with its eligibility conditions, juvenile period, memory inheritance, the `births` RNG stream, and the 1,000-agent safety cap.
+- On death, transfer the agent's whole inventory to its home's chests or its tile, and update the home's residents.
+- Clicking an agent reveals needs, inventory, traits, skills, home, remembered places, goal, action score breakdown, age, frailty, health ceiling, and reproduction eligibility; for dead agents, the cause of death.
 - Record a rolling event log of actions and resource changes.
 - Test resource conservation, deterministic updates, death, and bounded agent properties.
-- Compare a plentiful-food world against a scarce-food world.
+- Compare a plentiful-food world against a scarce-food world, including births, deaths by cause, and lifespan.
 
-**Week 2 deliverable:** 100 locally informed agents who explore, gather, consume resources, and migrate in response to scarcity.
+**Week 2 deliverable:** A starting population of 100 locally informed agents who explore, gather, consume resources, migrate in response to scarcity, form shared homes with storage, age, reproduce, and die.
 
-**Acceptance criteria:** Agents make valid independent decisions; resource constraints are respected; inspection explains choices; same seed/config reproduces the same state at a given tick; survival differs under controlled scarcity conditions.
+**Acceptance criteria:** Agents make valid independent decisions; agents never route through tiles they don't know; resource constraints are respected, including carry limits, storage capacity, spoilage, births, and deaths; inspection explains choices and every death; same seed/config reproduces the same state at a given tick; survival, births, and lifespans differ under controlled scarcity conditions; the population never exceeds the safety cap.
 
 ## 7. Week 3 — Emergent settlements, trade, and infrastructure
 
 **Goal:** Make social organization possible without scheduling settlement formation.
 
-### Day 1: Homes and persistent residence
+### Day 1: Crowding, moving out, and specialization
 
-- Allow agents to choose a home location based on safety, resource access, and travel cost.
-- Introduce simple shelters and resource storage if necessary.
-- Track how long agents remain associated with a location.
-- Detect residential clusters for analytics using distance, occupancy, and persistence thresholds.
-- Ensure settlement detection **does not** itself grant benefits or trigger city-building behavior.
+- Implement the overcrowding cost and moving out, as specified in *Homes, sharing, and crowding*.
+- Add skill practice (learning by doing and slow decay), so specialization can emerge.
+- Track how long agents remain associated with a home.
+- Detect settlements and their size classes for analytics using N, M, R, and P, and ensure that detection **does not** itself grant benefits or trigger city-building behavior.
 
 ### Day 2: Exchange
 
-- Implement food/wood/stone inventories with explicit scarcity and utility.
-- Let agents evaluate voluntary barter with nearby agents.
-- Only execute exchanges that satisfy both parties' constraints and acceptance rules.
+- Value goods by each agent's own needs and reserve target.
+- Let agents evaluate voluntary barter with agents on the same or neighbouring tiles, using the trade rule.
+- Only execute exchanges that leave both parties better off and that each can afford from what it holds.
+- Add social memories of agents met, with reciprocity scores that bias partner choice and acceptance.
 - Log transactions, traded quantities, and distances.
 
 ### Day 3: Movement and trails
 
 - Track the number of crossings per tile.
 - Apply traffic decay: `traffic_next = lambda * traffic + crossings`.
-- Reduce travel costs modestly on heavily traveled, passable trails.
-- Use A* or Dijkstra on terrain/trail costs for agent routes.
+- Turn tiles above a traffic threshold into worn trails (MP cost × 0.8), which fade back when traffic decays.
+- Include trail costs in A\* routes, using the costs the agent has seen.
 - Guard against pathological feedback where all traffic collapses onto one route for artificial reasons.
 
 ### Day 4: Improved infrastructure
 
-- Allow agents to invest wood/stone/labor into improving repeatedly used paths when expected personal benefit exceeds cost.
-- Make constructed roads more durable than naturally worn trails.
+- Add frequent-tile memories, shared between residents of the same home.
+- Implement tile-by-tile `ImproveTrail` using the perceived-benefit rule in *Trails and roads*, including household weighting.
+- Make constructed roads (MP cost × 0.5) more durable than naturally worn trails, with daily condition loss when unused.
+- Implement `ImproveShelter` to raise a home's comfortable capacity.
 - Show traffic heatmaps and improved-road overlays.
 - Keep construction local and individually motivated; avoid central planning logic.
 
@@ -290,6 +612,7 @@ Every resource change should correspond to a defined event: regeneration, gather
 
 - Compare runs with and without barter.
 - Compare runs with and without trail travel discounts.
+- Compare strictly selfish agents (household weight 0, reciprocity off) against the default motives.
 - Measure persistent clusters, average trip length, resource flows, and path network connectivity.
 - Inspect failure modes: isolated agents, starvation loops, excessive clustering, and overpowered roads.
 
@@ -310,7 +633,8 @@ Every resource change should correspond to a defined event: regeneration, gather
 
 ### Day 2: Environmental shocks
 
-- Implement drought as reduced food regeneration in a selected region and time window.
+- Implement drought as reduced food regrowth in a region and time window, used both by scripted experiment droughts and by random droughts.
+- Implement random droughts on the `weather` RNG stream, with the frequency, size, length, severity, and cooldown in *Random droughts*, and a config switch to disable them.
 - Implement route failure as temporarily impassable or expensive path tiles.
 - Apply shocks through ordinary world mechanics, not direct agent behavior overrides.
 - Record the timing and parameters of interventions.
@@ -318,15 +642,15 @@ Every resource change should correspond to a defined event: regeneration, gather
 ### Day 3: Branching experiments
 
 - Save a world at day 100.
-- Branch into A: control; B: drought from day 100 onward.
+- Branch into A: control; B: scripted drought from day 100 onward. Both branches keep identical random droughts from the shared `weather` stream.
 - Continue both through day 300 from the same initial snapshot.
 - Keep random streams and update ordering controlled to make comparisons interpretable.
 
 ### Day 4: Metrics and headless runner
 
-- Export CSV/JSON metrics: population, health, hunger, settlement count, settlement persistence, trade volume, average travel cost, inventory distribution, and recovery time.
+- Export CSV/JSON metrics: population, births, deaths by cause, age distribution, mean lifespan, mean frailty, health, hunger, settlement count, settlement persistence, trade volume, average travel cost, inventory distribution, and recovery time (time for population and births to return to their pre-shock levels). Flag runs that hit the safety cap.
 - Add CLI commands for seeded runs, snapshot loading, scenario selection, and result export.
-- Run multiple seeds and compare averages and variability; do not rely on a single attractive example.
+- Validate the whole pipeline on the single primary seed first. The CLI must already accept a list of seeds, so scaling up later needs no code changes.
 
 ### Day 5: Final demo and hardening
 
@@ -352,14 +676,21 @@ Limited local information, resource scarcity, and repeated interaction can gener
 | Scarcity | Normal food regeneration | Lower regeneration | Survival, migration, cluster persistence |
 | Trade | Barter enabled | Barter disabled | Trade volume, inventory inequality, survival |
 | Trails | Movement wear reduces cost | No trail advantage | Network structure, average travel cost |
-| Disaster | No drought | Regional drought at day 100 | Recovery time, population, relocation |
+| Disaster | No scripted drought | Scripted regional drought at day 100 | Recovery time, population, relocation |
+| Climate | Random droughts off | Random droughts on | Population stability, storage use, migration |
 | Knowledge | Agents remember resources | Memory disabled/limited | Search effort, starvation, travel distance |
+| Motives | Household weighting and reciprocity on | Strictly selfish (both off) | Road tiles built, trade volume, repeat trade partners, settlement count |
 
-Use multiple seeds for each experiment, hold parameters fixed within a comparison, and record all intervention configurations. Report uncertainty and failed runs rather than selecting only visually appealing results.
+### Seed plan
+
+1. **Phase 1, validation (MVP):** run everything on a single primary seed until the systems work: world generation, survival, households, trade, trails, snapshots, and branching. Golden hashes are recorded for this seed. A second seed is used only to check that different seeds produce different worlds.
+2. **Phase 2, experiments (after the MVP):** scale up to multiple seeds per experiment, starting with 10, and compare averages and variability. Conclusions should never rest on a single attractive example.
+
+In Phase 2, hold parameters fixed within a comparison, and record all intervention configurations. Report uncertainty and failed runs rather than selecting only visually appealing results.
 
 ### What counts as a settlement?
 
-For measurement purposes only: a spatial cluster of at least *N* long-term homes within radius *R*, persisting for *P* ticks. Expose N/R/P in experiment configuration and test sensitivity to those thresholds. Avoid defining settlement success so loosely that random crowding counts as civilization.
+For measurement purposes only: a spatial cluster of at least *N* occupied homes and *M* residents within *R* tiles, persisting for *P* days. Defaults are N = 5, M = 15, R = 3, and P = 60, with hamlet, village, and town size classes; see *Settlement detection*. Expose N/M/R/P in experiment configuration and test sensitivity to those thresholds. Avoid defining settlement success so loosely that random crowding counts as civilization.
 
 ### What counts as a road?
 
@@ -372,9 +703,23 @@ Distinguish (1) raw traffic, (2) an emergent worn trail above a traffic threshol
 - World generation is deterministic and tile values are valid.
 - River segments obey routing and boundary constraints.
 - Agents cannot spend, consume, gather, or trade unavailable resources.
-- Health, hunger, and energy remain within defined bounds.
-- Pathfinding respects impassable tiles and route costs.
+- Health, hunger, and energy remain within defined bounds, and health never exceeds the health ceiling.
+- Frailty never decreases; an agent with no frailty keeps a health ceiling of 1.0 until elder age.
+- An agent dies exactly when health or the health ceiling reaches 0, and each death records a cause.
+- A dying agent's whole inventory is transferred to its home or tile; total resources are unchanged by deaths and births.
+- `Reproduce` is never executed when any eligibility condition fails, including for juveniles, agents past elder age, and at the population cap.
+- Newborns inherit only memories the parent held, and get IDs in deterministic order.
+- Pathfinding respects impassable tiles and route costs, never includes unknown tiles, and stays within the expansion limit.
+- Line-of-sight masks match a brute-force visibility check.
+- Fertility follows the river-distance bonus; food and wood regrowth never exceed capacity; stone never regenerates.
+- Inventories never exceed the carry limit, and chests never exceed 200 weight units; spoilage is logged as destruction.
+- Agents eat only from their own inventory.
+- Memory never exceeds its fixed sizes, and replacement is deterministic.
+- The overcrowding cost applies only after more than 7 consecutive days over capacity.
 - Settlement detection produces stable results for known synthetic layouts.
+- `ImproveTrail` happens only on worn-trail tiles, only when perceived benefit exceeds cost, and never when the household weight is 0 and the agent's own crossings are too few.
+- Reciprocity scores stay within bounds and drift back to neutral; with reciprocity off, partner choice ignores them.
+- No agent decision reads settlement detection results, the road network as a whole, or population-wide statistics.
 
 ### Integration tests
 
@@ -383,35 +728,56 @@ Distinguish (1) raw traffic, (2) an emergent worn trail above a traffic threshol
 - Renderer on/off does not affect simulation state.
 - Scenario branching starts from identical state.
 - A drought modifies regeneration but never directly commands agents to migrate.
+- Over a long run with random droughts on, drought frequency, size, length, and severity stay within their configured ranges, with at most one active at a time.
+- A long run (for example 300 days) shows generational turnover: some initial agents die of old age and newborns reach maturity.
+- A run with abundant food and low thresholds hits the 1,000-agent cap without exceeding it, and is flagged.
 
 ### Performance tests
 
 - Benchmark 100, 500, and 1,000 agents over a fixed number of ticks.
 - Track ticks per second, memory use, and pathfinding work.
+- Budget: at 1,000 agents, observation should cost about 169 tile lookups per agent per observation, agent memory about 4 MB in total, and A\* at most 4,000 expansions per search.
 - Avoid per-agent full-map searches every tick; cache paths or restrict search to known regions.
 - Profile before optimizing. A 128×128 map and 100 agents should be an approachable laptop target, but exact performance depends on implementation and hardware.
+- Run the benchmarks on both the Apple Silicon Mac and a Windows laptop, and record results for each.
+
+### Cross-platform tests
+
+- `cargo test --workspace` passes on both macOS and Windows.
+- A snapshot saved on macOS loads on Windows, and one saved on Windows loads on macOS.
+- **Golden hash tests:** for the primary validation seed (more seeds in Phase 2), the world-generation hash and the state hashes at ticks 0, 100, and 1,000 match the values in `tests/golden/`. The same files are checked on both OSes, so any difference between platforms fails the test.
+- A snapshot saved on one OS and resumed on the other reaches the same state hash as an uninterrupted run.
+- Release and debug builds produce identical hashes.
+- `cargo clippy --workspace --all-targets` reports no disallowed float methods in `accrete-core`.
+- `cargo build --offline` succeeds once dependencies are fetched or vendored.
 
 ### Known risks and mitigations
 
 | Risk | Mitigation |
 |---|---|
 | Agents starve immediately | Tune starting conditions and verify resource accessibility |
+| Population explodes or collapses | Tune reproduction thresholds and cooldown; safety cap at 1,000; flag capped runs |
+| Random droughts too frequent or too harsh | Tune the daily chance, size, and severity; cooldown between droughts; config switch to turn them off |
+| Agents hoard instead of trading | Spoilage, carry limits, and finite chest space; check with the barter on/off experiment |
+| Homes become permanently overcrowded | Overcrowding cost, moving out, and shelter improvements |
+| Initial agents all age out at once | Give initial agents seeded starting ages spread between maturity and elder age |
 | Agents oscillate between goals | Goal commitment, hysteresis, cooldowns |
 | Agents appear omniscient | Strict observation/memory interface |
 | Settlements never form | Diagnose incentives; do not force settlements |
 | Trails produce runaway routing | Cap trail benefits, use decay and realistic terrain costs |
 | Replays diverge | Stable iteration order, isolated seeded RNG, snapshot RNG state |
+| macOS and Windows results drift apart | Deterministic-float rules, `libm`, clippy bans, golden hashes tested on both OSes |
 | Scope expands too quickly | Lock each week's acceptance tests before adding systems |
 
 ## 11. Visualization specification
 
 Minimum UI:
 
-- Main map: terrain, rivers, agents, homes, trails, and improved roads.
+- Main map: terrain, rivers, agents, homes, chests, trails, improved roads, and active droughts.
 - Top bar: seed, tick/day, agent count, play/pause, step, speed, regenerate.
 - Map layers: biome, elevation, food, wood, stone, traffic, settlement clusters.
 - Inspector: click tile or agent; show state, local knowledge, current goal, and decision explanation.
-- Metrics panel: population, average hunger, trade activity, settlement count, travel cost.
+- Metrics panel: population, births and deaths by cause, age distribution, average hunger, trade activity, settlement count, travel cost.
 - Experiment controls: load snapshot, select drought or route disruption, branch and compare.
 
 Prioritize readability and responsiveness over elaborate graphics. Colored tiles and moving dots are enough for a convincing first version.
@@ -420,7 +786,7 @@ Prioritize readability and responsiveness over elaborate graphics. Colored tiles
 
 The MVP is complete when a user can:
 
-1. Start Accrete locally without cloud dependencies.
+1. Start Accrete locally on macOS (Apple Silicon) or Windows, offline and without cloud dependencies.
 2. Generate a repeatable world from a seed.
 3. Watch at least 100 independently acting agents survive, explore, and interact.
 4. Inspect and understand individual decisions.
@@ -434,7 +800,7 @@ The MVP is complete when a user can:
 
 Paste the following into Codex once the repository is open:
 
-> Build **Accrete**, a local-first agent-based emergent civilization simulator in Rust. Create a Cargo workspace with `accrete-core` (pure simulation logic), `accrete-viewer` (macroquad visualization), and `accrete-cli` (headless execution). Implement **Week 1 only**: deterministic 128×128 procedural terrain generation with elevation, moisture, biomes, rivers, resource distribution, and viable starting positions for 100 agents. Add an interactive 2D renderer with pan, zoom, seed input, regenerate, and tile inspection. Keep simulation independent of rendering. Add reproducibility and validity tests. Target a Windows laptop with no cloud or ML dependencies. Do not implement economy, trading, roads, or agent behavior yet. Compile and test incrementally.
+> Build **Accrete**, a local-first agent-based emergent civilization simulator in Rust. Create a Cargo workspace with `accrete-core` (pure simulation logic), `accrete-viewer` (macroquad visualization), and `accrete-cli` (headless execution). Implement **Week 1 only**: deterministic 128×128 procedural terrain generation with elevation, moisture, biomes, rivers, river-distance-based fertility, patchy food, forests, and clustered finite stone deposits as specified in `accrete.md`, movement-point terrain costs, precomputed line-of-sight masks, and viable starting positions for 100 agents. Add an interactive 2D renderer with pan, zoom, seed input, regenerate, and tile inspection. Keep simulation independent of rendering. Add reproducibility and validity tests. It must build and run offline on both macOS (Apple Silicon) and Windows, with no cloud or ML dependencies and no platform-specific code in `accrete-core`; pin the toolchain with `rust-toolchain.toml` and use `PathBuf` for all file paths. Simulation results must be bit-identical on both OSes: follow the *Cross-platform determinism* rules (no `std` transcendental functions or `mul_add` in `accrete-core`, use `libm`, write the terrain noise yourself, use a stable state hash), and add golden-hash tests under `tests/golden/`. Do not implement economy, trading, roads, or agent behavior yet. Compile and test incrementally.
 
 ### Recommended development loop
 
