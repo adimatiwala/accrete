@@ -1111,9 +1111,24 @@ This entry also covers the CLAUDE.md change that was merged before this changelo
 * **Classification:** `.github/scripts/ci-changes.sh` classifies the diff. Unknown paths deliberately run everything, so a new kind of file cannot skip CI.
 * **Front-end-only changes skip the debug pass,** because front ends cannot change simulation results, and the debug pass exists to check that debug builds match the golden hashes.
 * **`ci-result` always reports** and treats a skipped Rust job as a pass, so it is the single check to require in branch protection.
-* **Triggers:** pull requests, pushes to `main`, and manual runs. Branches with an open PR were previously built twice, once for the push and once for the PR. A newer push to a PR now cancels its older run; pushes to `main` are never cancelled.
+* **Triggers:** pull requests (including base changes, so a retargeted stacked PR is re-classified), pushes to `main`, merge-queue checks, and manual runs. Branches with an open PR were previously built twice, once for the push and once for the PR. A newer run for a PR cancels its older one. Every other run has its own concurrency group, so a push to `main` is never cancelled or dropped from the queue.
+* **Fail-safe, after review.** A review of the first version found four ways CI could skip tests and still pass:
+  * the classifier step ran without `pipefail`, so a broken script still passed;
+  * a failed `git diff` gave an empty list, so everything was skipped;
+  * `git diff --name-only` lists only the destination of a rename, so moving a scenario file into `docs/` skipped its tests;
+  * the gates required `== 'true'`, so a missing output skipped the Rust job.
+
+  The fixes:
+  * `shell: bash`;
+  * an empty or failed diff runs everything;
+  * `--no-renames` with NUL-separated names;
+  * the gates are `!= 'false'`;
+  * `ci-result` fails if the classifier produced no explicit flag.
+
+  PRs are now compared with the merge commit's first parent. Crate READMEs count as code.
 * **Changelog rule:** every PR, including tooling, CI and docs PRs, now adds an Appendix A section like this one. This is recorded in CLAUDE.md and the PR template.
 
 **Verification:**
-* The classifier was run on five real commits from this repository's history (spec-only and docs-only commits skip Rust; the simulation commits run everything) and on eight synthetic changes covering each category, plus a missing or unknown base. All were classified as intended.
+* The classifier was run on five real commits from this repository's history (spec-only and docs-only commits skip Rust; the simulation commits run everything).
+* `.github/scripts/test-ci-changes.sh` covers 16 cases in a throwaway repository and runs in CI before every classification: each category, renames, cross-category moves, deletions, non-ASCII names with spaces, an empty diff, and a missing or unknown base. Run against the first version of the classifier, it fails 5 of them.
 * The first live CI run of the `changes` job passed.
