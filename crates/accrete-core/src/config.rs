@@ -41,8 +41,142 @@ pub struct Config {
 impl Config {
     pub fn from_toml_str(s: &str) -> Result<Self, String> {
         let c: Self = toml::from_str(s).map_err(|e| e.to_string())?;
-        c.disruption.validate()?;
+        c.validate()?;
         Ok(c)
+    }
+
+    /// Rejects settings no run can use, so a bad value fails up front
+    /// instead of panicking or running silently with nonsense:
+    /// - every float is finite (NaN or infinity cannot be reproduced);
+    /// - quantities, rates and capacities are non-negative (utility weights
+    ///   in `[decision]` and `infrastructure.household_weight` are
+    ///   preferences and may be any finite value);
+    /// - fractions and probabilities lie in `[0, 1]`;
+    /// - every `*_min` is at most its `*_max`;
+    /// - the world, movement points and memory pools are large enough to run.
+    pub fn validate(&self) -> Result<(), String> {
+        let doc = toml::Value::try_from(self).map_err(|e| e.to_string())?;
+        let sections = doc.as_table().expect("config is a table");
+        for (section, table) in sections {
+            let Some(table) = table.as_table() else {
+                continue;
+            };
+            for (key, v) in table {
+                let Some(x) = v.as_float() else { continue };
+                let name = format!("{section}.{key}");
+                if !x.is_finite() {
+                    return Err(format!("{name} must be a finite number, got {x}"));
+                }
+                let preference = section == "decision" || name == "infrastructure.household_weight";
+                if x < 0.0 && !preference {
+                    return Err(format!("{name} must not be negative, got {x}"));
+                }
+            }
+        }
+        let unit = [
+            ("world.ocean_fraction", self.world.ocean_fraction),
+            ("world.mountain_fraction", self.world.mountain_fraction),
+            ("world.hill_fraction", self.world.hill_fraction),
+            (
+                "resources.initial_food_fraction",
+                self.resources.initial_food_fraction,
+            ),
+            ("life.reproduce_chance", self.life.reproduce_chance),
+            (
+                "inventory.carried_spoil_per_day",
+                self.inventory.carried_spoil_per_day,
+            ),
+            (
+                "inventory.stored_spoil_per_day",
+                self.inventory.stored_spoil_per_day,
+            ),
+            (
+                "memory.newborn_resource_share",
+                self.memory.newborn_resource_share,
+            ),
+            ("trails.decay", self.trails.decay),
+            ("weather.daily_chance", self.weather.daily_chance),
+            ("weather.severity_min", self.weather.severity_min),
+            ("weather.severity_max", self.weather.severity_max),
+        ];
+        for (name, x) in unit {
+            if !(0.0..=1.0).contains(&x) {
+                return Err(format!("{name} must be between 0 and 1, got {x}"));
+            }
+        }
+        let w = &self.world;
+        if w.ocean_fraction + w.mountain_fraction + w.hill_fraction > 1.0 {
+            return Err(format!(
+                "world.ocean_fraction + mountain_fraction + hill_fraction must be at most 1, got {}",
+                w.ocean_fraction + w.mountain_fraction + w.hill_fraction
+            ));
+        }
+        let pairs_f = [
+            (
+                "spawn.initial_hunger",
+                self.spawn.initial_hunger_min,
+                self.spawn.initial_hunger_max,
+            ),
+            (
+                "skills.aptitude",
+                self.skills.aptitude_min,
+                self.skills.aptitude_max,
+            ),
+            (
+                "weather.severity",
+                self.weather.severity_min,
+                self.weather.severity_max,
+            ),
+        ];
+        for (name, lo, hi) in pairs_f {
+            if lo > hi {
+                return Err(format!(
+                    "{name}_min ({lo}) must not exceed {name}_max ({hi})"
+                ));
+            }
+        }
+        if self.life.maturity_days > self.life.elder_days {
+            return Err(format!(
+                "life.maturity_days ({}) must not exceed life.elder_days ({})",
+                self.life.maturity_days, self.life.elder_days
+            ));
+        }
+        let pairs_u = [
+            (
+                "resources.stone",
+                self.resources.stone_min,
+                self.resources.stone_max,
+            ),
+            (
+                "weather.radius",
+                self.weather.radius_min,
+                self.weather.radius_max,
+            ),
+            (
+                "weather.length",
+                self.weather.length_min_days,
+                self.weather.length_max_days,
+            ),
+        ];
+        for (name, lo, hi) in pairs_u {
+            if lo > hi {
+                return Err(format!(
+                    "{name}_min ({lo}) must not exceed {name}_max ({hi})"
+                ));
+            }
+        }
+        let at_least_one = [
+            ("world.width", self.world.width),
+            ("world.height", self.world.height),
+            ("movement.mp_per_tick", self.movement.mp_per_tick),
+            ("movement.min_mp", self.movement.min_mp),
+        ];
+        for (name, x) in at_least_one {
+            if x == 0 {
+                return Err(format!("{name} must be at least 1"));
+            }
+        }
+        self.disruption.validate()
     }
 
     pub fn to_toml_string(&self) -> String {
@@ -1042,6 +1176,47 @@ mod tests {
             Config::default(),
             "configs/default.toml drifted from Config::default()"
         );
+    }
+
+    #[test]
+    fn validation_rejects_settings_no_run_can_use() {
+        let ok = Config::default();
+        assert_eq!(ok.validate(), Ok(()));
+        type Breaks = fn(&mut Config);
+        let bad: [(&str, Breaks); 12] = [
+            ("food_regrowth", |c| c.resources.food_regrowth = f32::NAN),
+            ("food_regrowth", |c| {
+                c.resources.food_regrowth = f32::INFINITY
+            }),
+            ("food_regrowth", |c| c.resources.food_regrowth = -0.1),
+            ("reproduce_chance", |c| c.life.reproduce_chance = 1.5),
+            ("hill_fraction", |c| {
+                c.world.ocean_fraction = 0.6;
+                c.world.hill_fraction = 0.6;
+            }),
+            ("stone_min", |c| c.resources.stone_min = 300),
+            ("aptitude_min", |c| c.skills.aptitude_min = 2.0),
+            ("radius_min", |c| c.weather.radius_min = 99),
+            ("maturity_days", |c| c.life.elder_days = 0.0),
+            ("world.width", |c| c.world.width = 0),
+            ("min_mp", |c| c.movement.min_mp = 0),
+            ("time_cost", |c| c.decision.time_cost = f32::NAN),
+        ];
+        for (what, f) in bad {
+            let mut c = ok.clone();
+            f(&mut c);
+            let e = c.validate().unwrap_err();
+            assert!(e.contains(what), "{what}: {e}");
+            assert!(
+                Config::from_toml_str(&c.to_toml_string()).is_err(),
+                "{what}"
+            );
+        }
+        // Utility weights are preferences: negative is allowed, NaN is not.
+        let mut c = ok.clone();
+        c.decision.social_weight = -1.0;
+        c.infrastructure.household_weight = -0.5;
+        assert_eq!(c.validate(), Ok(()));
     }
 
     #[test]

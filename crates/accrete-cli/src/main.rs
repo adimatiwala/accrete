@@ -402,6 +402,7 @@ fn main() {
             sweep::run_sweep(
                 &config,
                 sweep::SweepArgs {
+                    sets,
                     params,
                     lhs,
                     design_seed,

@@ -898,7 +898,7 @@ Paste the following into Codex once the repository is open:
 
 This appendix records what was built from this specification, in the order it was built. It also records every place where the specification left a choice open (or was found not to work as written), what was chosen, and why. The base is commit `e5a15ce` (this document and a README only). All numbers below are defaults in `configs/default.toml`, which a test keeps identical to `Config::default()`.
 
-**Status against the plan:** Weeks 1–4 are complete: agents, settlements, trade, trails and roads, droughts, snapshots and branching, route disruptions, the random and omniscient baselines, the behavioural benchmarks, the viewer's experiment controls, and the Week 3 Day 5 emergence experiment suite. Suggested next work is in A.10 (run storage and parameter sweeps) and Phase 2 multi-seed experiments in Section 9.
+**Status against the plan:** Weeks 1–4 are complete. Phase 2 tooling is in place: the scarcity rerun (A.18), run manifests with `accrete reproduce`, seed ranges, parallel seeds and aggregates (A.19), and grid / Latin-hypercube parameter sweeps (A.20). Suggested next work in A.10: a SQLite/DuckDB run index, Parquet metrics, Sobol designs, and larger multi-seed Phase 2 campaigns.
 
 ### A.1 Repository and tooling
 
@@ -1398,10 +1398,10 @@ Phase 2 (Section 9) asks for results across many seeds with uncertainty, and A.1
 | Piece | What and why |
 |---|---|
 | **Grid** (`--param section.key=a,b,c`, repeatable) | The cartesian product of the listed values, with the first parameter varying slowest. Booleans and other non-numeric keys work here. |
-| **Latin hypercube** (`--lhs N --param section.key=lo..hi`) | N points that cover each parameter's range evenly: every parameter gets exactly one point in each of its N strata, at a random spot inside the stratum. Numeric keys only; integer keys get rounded values. The design draws from a new RNG stream, `Design = 9`, appended under the never-renumber rule. Simulations never use it, so no hash changes. `--design-seed` makes a design reproducible. |
-| **Validation first** | Every point is applied to the base config (`run::try_apply_override`, a non-panicking version of `--set`) before anything runs. A bad key or value, a range in a grid, a list in an LHS, a duplicate key, or more than 100,000 runs is an error up front. |
-| **Parallel, deterministic** | (point, seed) pairs run through `parallel::map_ordered`, and outputs are byte-identical whatever `--jobs` is (tested). Each run writes `pNNN_seedS_*` metrics and a manifest, so any single run can be checked with `accrete reproduce`. |
-| **Outputs** | `sweep_design.json` (mode, design seed, parameters, seeds, days and every point), `sweep_runs.csv` (one row per point and seed: parameter values, the shared `OUTCOMES`, the final state hash), and `sweep_points.csv` (per point: the mean and 95 % t-interval of each outcome across seeds). |
+| **Latin hypercube** (`--lhs N --param section.key=lo..hi`) | N points that cover each parameter's range evenly: every parameter gets exactly one point in each of its N strata, at a random spot inside the stratum. Numeric keys only; integer keys stratify the integers in `[ceil(lo), floor(hi)]` (with repetition when N exceeds that count). The design draws from a new RNG stream, `Design = 9`, appended under the never-renumber rule. Simulations never use it, so no hash changes. `--design-seed` makes a design reproducible. |
+| **Validation first** | Every point is applied to the base config (`run::try_apply_override`) and must pass `Config::validate` before anything runs. A bad key or value, a non-finite number, a range in a grid, a list in an LHS, a duplicate key, a debugging-only grid that does not change results, `--jobs 0`, or more than 100,000 runs/points is an error up front. `--set` now exits with status 2 on a bad override instead of panicking. |
+| **Parallel, deterministic** | (point, seed) pairs run through `parallel::map_ordered`, and outputs are byte-identical whatever `--jobs` is (tested). Each run writes `pNNN_seedS_*` metrics and a manifest, so any single run can be checked with `accrete reproduce`. A panic in one run names the point and seed and writes no summary. |
+| **Outputs** | `sweep_runs.csv` and `sweep_points.csv` first; `sweep_design.json` last (and only on success), including the `--set` list and the full base config so a finished design can be audited. Parameter values in the CSVs are canonical (parsed and re-printed), so `0.10` and `0.1` are one grid point. |
 
 **Demo** (`--param resources.food_regrowth=0.03,0.06,0.1,0.15 --seed 1-3 --days 150 --jobs 8`; 12 runs in 15 s):
 
@@ -1415,8 +1415,17 @@ Phase 2 (Section 9) asks for results across many seeds with uncertainty, and A.1
 A smooth dose-response: more food gives more people, higher per-capita fertility and tighter clustering, consistent with A.18. Three seeds and 150 days, so this demonstrates the tool rather than establishing a result.
 
 **Tests:**
-* Parameter parsing: values, deduplication, ranges, and bad input.
-* Grids are cartesian products in the stated order.
+* Parameter parsing: values, ranges, and bad input.
+* Grids are cartesian products in the stated order; numeric aliases (`0.1`, `0.10`, `+0.1`) collapse to one point.
 * A Latin hypercube puts one point in every stratum, is reproducible from its design seed, and gives integers for integer keys.
-* Invalid designs and points are rejected.
-* An end-to-end sweep writes the expected rows and per-run manifests, with byte-identical files for `--jobs 1` and `--jobs 4`.
+* Invalid designs and points are rejected, including huge grids (before they are built), non-finite values, and configs `Config::validate` refuses.
+* An end-to-end sweep writes the expected rows and per-run manifests, with byte-identical files for `--jobs 1` and `--jobs 4`; each run reproduces from its manifest.
+* CLI: `--jobs 0` and semantically impossible / no-op points fail before anything is written.
+
+**Review fixes:**
+* **`Config::validate`.** Floats must be finite; non-preference quantities non-negative; fractions in `[0, 1]`; every `*_min` ≤ `*_max`; world size and movement points at least 1. Called from TOML load, `set_config`, and every `--set` / sweep point.
+* **Canonical grid values** and **integer LHS strata** that stay inside the stated range.
+* **Size checks** before allocating a huge cartesian product; **overflow-safe** `points × seeds`.
+* **No-op grid points** (debugging-only settings) refused; overlapping `--set` / `--param` keys warned.
+* **`--set` recorded** in the design; design file written only after a successful sweep; label width grows past 999 points.
+* A failing run under `--jobs` names the point and seed; `--set` errors exit 2 instead of panicking.

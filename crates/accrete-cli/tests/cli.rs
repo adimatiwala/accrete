@@ -239,12 +239,59 @@ fn sweeps_reject_jobs_zero_and_bad_points_before_running() {
         ],
         vec!["sweep", "--param", "resources.food_regrowth=x"],
         vec!["sweep", "--param", "nope.key=1"],
+        // Semantically impossible, non-finite, and no-op points.
+        vec!["sweep", "--param", "resources.stone_min=100,300"],
+        vec!["sweep", "--param", "world.width=0,64"],
+        vec!["sweep", "--param", "resources.food_regrowth=0.1,nan"],
+        vec!["sweep", "--param", "sim.check_invariants=false,true"],
+        vec![
+            "sweep",
+            "--lhs",
+            "3",
+            "--param",
+            "resources.food_regrowth=-1..0.5",
+        ],
+        vec![
+            "sweep",
+            "--set",
+            "resources.food_regrowth=inf",
+            "--param",
+            "spawn.agents=50",
+        ],
     ] {
         let mut a = args.clone();
         a.extend(["--days", "1", "-o", s(&dir)]);
         let o = accrete(&a);
-        assert_eq!(o.status.code(), Some(2), "{args:?}");
+        assert_eq!(o.status.code(), Some(2), "{args:?}: {o:?}");
     }
     assert!(!dir.join("sweep_runs.csv").exists(), "nothing ran");
+    assert!(!dir.join("sweep_design.json").exists(), "nothing ran");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_sweep_run_reproduces_from_its_manifest() {
+    let dir = tmp("sweeprepro");
+    ok(&accrete(&[
+        "sweep",
+        "--lhs",
+        "2",
+        "--param",
+        "resources.food_regrowth=0.02..0.2",
+        "--param",
+        "sight.radius=4..9",
+        "--seed",
+        "3",
+        "--days",
+        "2",
+        "-o",
+        s(&dir),
+    ]));
+    for k in ["p000", "p001"] {
+        let m = dir.join(format!("{k}_seed3_manifest.json"));
+        ok(&accrete(&["reproduce", s(&m)]));
+    }
+    let design = std::fs::read_to_string(dir.join("sweep_design.json")).unwrap();
+    assert!(design.contains("\"base_config\""), "{design}");
     let _ = std::fs::remove_dir_all(&dir);
 }

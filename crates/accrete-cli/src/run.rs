@@ -421,9 +421,13 @@ pub fn snapshot(sim: &Simulation, out: &Path, name: &str) {
 }
 
 /// Apply a `section.key=value` override by round-tripping the config through
-/// TOML. Panics with a clear message on a bad override (for `--set`).
+/// TOML. On a bad override (for `--set`) it prints the reason and exits
+/// with status 2, like every other command-line error.
 pub fn apply_override(config: &Config, kv: &str) -> Config {
-    try_apply_override(config, kv).unwrap_or_else(|e| panic!("{e}"))
+    try_apply_override(config, kv).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(2)
+    })
 }
 
 /// The kind of value a config key holds, for parsing and sweeping.

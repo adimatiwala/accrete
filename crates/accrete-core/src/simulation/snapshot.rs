@@ -239,7 +239,7 @@ impl Simulation {
                 "the [world] config cannot change mid-run: the world is already generated".into(),
             );
         }
-        config.disruption.validate()?;
+        config.validate()?;
         if (self.agents.len() as u32) > config.life.population_cap {
             return Err(format!(
                 "life.population_cap {} is below the current population {}",
