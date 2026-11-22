@@ -1169,3 +1169,4 @@ This entry also covers the CLAUDE.md change that was merged before this changelo
   * a drought starting on the snapshot day taking effect the next day;
   * label and save-path checks;
   * day-aligned comparison rows.
+* **Windows CI fix.** The save-path test used `/dev/null/x.snap.json` as an unwritable path. On Windows that resolves to `C:\dev\null\x.snap.json`, which can be created, so the test failed there. The test now uses a path under a regular file, which no platform can create. Only the test changed; no hash moved.

@@ -396,8 +396,11 @@ mod tests {
 
     #[test]
     fn unwritable_save_paths_fail_up_front() {
-        assert!(check_writable(Path::new("/dev/null/x.snap.json")).is_err());
         let dir = std::env::temp_dir().join(format!("accrete-w-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("plain-file");
+        std::fs::write(&file, b"").unwrap();
+        assert!(check_writable(&file.join("x.snap.json")).is_err());
         let p = dir.join("sub/ok.snap.json");
         assert!(check_writable(&p).is_ok());
         assert!(!p.exists(), "the probe leaves no file behind");
