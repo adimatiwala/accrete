@@ -6,9 +6,14 @@
 //! byte-identical whatever the number of jobs.
 
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// `items.iter().map(f).collect()`, using up to `jobs` threads.
+///
+/// If `f` panics for an item, no further items are started, the threads
+/// already running finish their current item, and the panic is re-raised
+/// with the index of the item that failed (the first one, by index, if
+/// several did).
 pub fn map_ordered<T: Sync, R: Send>(
     items: &[T],
     jobs: usize,
@@ -18,21 +23,39 @@ pub fn map_ordered<T: Sync, R: Send>(
         return items.iter().map(&f).collect();
     }
     let next = AtomicUsize::new(0);
+    let stop = AtomicBool::new(false);
+    let failure: Mutex<Option<(usize, String)>> = Mutex::new(None);
     let slots: Vec<Mutex<Option<R>>> = items.iter().map(|_| Mutex::new(None)).collect();
     std::thread::scope(|s| {
         for _ in 0..jobs.min(items.len()) {
             s.spawn(|| {
-                loop {
+                while !stop.load(Ordering::Relaxed) {
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     if i >= items.len() {
                         break;
                     }
-                    let r = f(&items[i]);
-                    *slots[i].lock().expect("result slot") = Some(r);
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(&items[i]))) {
+                        Ok(r) => *slots[i].lock().expect("result slot") = Some(r),
+                        Err(payload) => {
+                            stop.store(true, Ordering::Relaxed);
+                            let msg = payload
+                                .downcast_ref::<String>()
+                                .cloned()
+                                .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+                                .unwrap_or_else(|| "panic".into());
+                            let mut f = failure.lock().expect("failure slot");
+                            if f.as_ref().is_none_or(|(j, _)| i < *j) {
+                                *f = Some((i, msg));
+                            }
+                        }
+                    }
                 }
             });
         }
     });
+    if let Some((i, msg)) = failure.into_inner().expect("failure slot") {
+        panic!("item {i} failed: {msg}");
+    }
     slots
         .into_iter()
         .map(|m| {
@@ -53,7 +76,14 @@ pub fn t95(df: usize) -> f64 {
     match df {
         0 => f64::NAN,
         1..=30 => T[df - 1],
-        _ => 1.96,
+        // Cornish-Fisher expansion around the normal quantile; within 0.001
+        // of the exact value for df > 30 (e.g. 2.040 at df 31).
+        _ => {
+            let z = 1.959_963_984_540_054_f64;
+            let (z3, d) = (z * z * z, df as f64);
+            let z5 = z3 * z * z;
+            z + (z3 + z) / (4.0 * d) + (5.0 * z5 + 16.0 * z3 + 3.0 * z) / (96.0 * d * d)
+        }
     }
 }
 
@@ -96,6 +126,43 @@ mod tests {
         let (m, sd, ci) = mean_sd_ci(&[5.0]);
         assert_eq!(m, 5.0);
         assert!(sd.is_nan() && ci.is_nan());
-        assert!(t95(1000) == 1.96 && t95(0).is_nan());
+        assert!(t95(0).is_nan());
+        // Reference values of Student's t (two-sided 95 %).
+        for (df, exact) in [
+            (31, 2.0395),
+            (40, 2.0211),
+            (60, 2.0003),
+            (120, 1.9799),
+            (1000, 1.9623),
+        ] {
+            assert!(
+                (t95(df) - exact).abs() < 1e-3,
+                "df {df}: {} vs {exact}",
+                t95(df)
+            );
+        }
+    }
+
+    #[test]
+    fn a_failing_item_stops_the_rest_and_names_the_item() {
+        let started = AtomicUsize::new(0);
+        let items: Vec<u32> = (0..200).collect();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            map_ordered(&items, 4, |&x| {
+                started.fetch_add(1, Ordering::Relaxed);
+                if x == 3 {
+                    panic!("boom at {x}");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+                x
+            })
+        }));
+        let err = result.expect_err("the panic propagates");
+        let msg = err.downcast_ref::<String>().cloned().unwrap_or_default();
+        assert!(
+            msg.contains("item 3 failed") && msg.contains("boom at 3"),
+            "{msg}"
+        );
+        assert!(started.load(Ordering::Relaxed) < 50, "stopped early");
     }
 }

@@ -318,7 +318,8 @@ pub fn aggregate_csv(experiments: &[&'static Experiment], results: &[SeedResult]
             let (mut c, mut i, mut d) = (Vec::new(), Vec::new(), Vec::new());
             for r in results {
                 for (exp, cv, iv) in &r.pairs {
-                    if *exp == e.name {
+                    // Only seeds where both sides are finite count.
+                    if *exp == e.name && cv[k].is_finite() && iv[k].is_finite() {
                         c.push(cv[k]);
                         i.push(iv[k]);
                         d.push(iv[k] - cv[k]);

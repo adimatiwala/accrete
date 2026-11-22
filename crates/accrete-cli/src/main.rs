@@ -248,6 +248,17 @@ fn main() {
             run::check_label(&label).unwrap_or_else(|e| fail(&e));
             if let Some(path) = &save {
                 run::check_writable(path).unwrap_or_else(|e| fail(&e));
+                if let Some(l) = &load {
+                    let same = match (std::fs::canonicalize(l), std::fs::canonicalize(path)) {
+                        (Ok(a), Ok(b)) => a == b,
+                        _ => l == path,
+                    };
+                    if same {
+                        fail(
+                            "--save must differ from --load: overwriting the start snapshot would make the run unreproducible",
+                        );
+                    }
+                }
             }
             let opts = run::RunOpts {
                 days,
@@ -318,6 +329,9 @@ fn main() {
                 config = run::apply_override(&config, kv);
             }
             let seeds = parse_seed_list(&seed).unwrap_or_else(|e| fail(&e));
+            if jobs == 0 {
+                fail("--jobs must be at least 1");
+            }
             experiments::run_suite(
                 &config,
                 experiments::ExperimentsArgs {
@@ -348,7 +362,8 @@ fn main() {
                 println!("  note: {d}");
             }
             if !r.start_matches {
-                println!("  warning: the start state differs from the recorded one");
+                eprintln!("  NOT reproduced: the start state differs from the recorded one");
+                std::process::exit(1);
             }
             if r.matches {
                 println!("  reproduced: final state hash {} matches", r.final_hash);

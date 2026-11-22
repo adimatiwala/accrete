@@ -1371,3 +1371,23 @@ Phase 2 (Section 9) asks for results across many seeds with uncertainty, and A.1
 * The t-interval is checked against hand-computed values.
 * The aggregate pairs differences by seed and leaves undefined cells empty.
 * Three seeds give byte-identical summary, aggregate and metrics files with `--jobs 1` and `--jobs 3`.
+
+**Review fixes** (from a review agent's pass over this PR):
+* **Stale dirty flag.** The build script re-ran only on git HEAD and index changes, so a build made after an unstaged edit could record `git_dirty: false`. It now re-runs when any workspace source, manifest, config or the lock file changes. It finds git's files with `git rev-parse`, so a git worktree (where `.git` is a file) no longer forces a full rebuild every time, and it sets `GIT_OPTIONAL_LOCKS=0` so `git status` can't trigger its own re-run.
+* **Manifests depended on `--jobs`.** The recorded command line included it; `--jobs` is now left out (it cannot change results), and arguments are recorded lossily, so a non-UTF-8 argument no longer panics after a run. An end-to-end test now compares *every* output file, manifests included, between `--jobs 1` and `--jobs 3`.
+* **Unreproducible `run --load X --save X`.** The start snapshot was overwritten. This is now refused before running.
+* **Moved results folders.** Manifests also store the snapshot path relative to the manifest, and `reproduce` tries each candidate (relative, as recorded, next to the manifest) and takes the first whose bytes match the recorded hash. Output paths are relative to the manifest and include every image written.
+* **`reproduce` checks more.** It now checks that the snapshot's seed matches, that start + ticks = final, and it fails (exit 1) when the start state differs.
+* **A failing seed under `--jobs`.** Other seeds used to keep starting. Now no new item starts after a failure, and the error names the item that failed. `--jobs 0` is rejected.
+* **t-values above 30 degrees of freedom** jumped to 1.96, about 4 % too narrow. They now use a Cornish-Fisher expansion, within 0.001 of exact (2.040 at df 31). Aggregates count only seeds where both sides are finite.
+* **Seed lists:**
+  * `1 - 3` (spaces) is a range;
+  * half-written (`1-`, `-3`) and hex (`0x1-0x3`) ranges are rejected instead of silently hashed;
+  * deduplication uses a set.
+  * **Behaviour change:** an argument like `2-3` used to be a hashed text seed and is now the range 2–3.
+* **New end-to-end tests** (`crates/accrete-cli/tests/cli.rs`, using the real binary):
+  * `reproduce` exit codes 0 and 1;
+  * every output file identical across `--jobs`;
+  * `--save` over `--load` refused;
+  * a moved results folder and both branch arms reproducing;
+  * `--jobs 0` rejected.

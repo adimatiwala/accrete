@@ -46,10 +46,57 @@ pub enum Start {
     Fresh { seed: u64 },
     /// A snapshot file; the manifest's config was applied after loading.
     Snapshot {
+        /// Absolute path when the run was recorded.
         path: PathBuf,
+        /// The same file relative to the manifest's directory, if one exists
+        /// (so a results folder can be moved or copied as a whole).
+        #[serde(default)]
+        relative_path: Option<PathBuf>,
         /// FNV-1a 64 (hex) of the snapshot file's bytes.
         file_hash: String,
     },
+}
+
+/// The command line, as recorded: lossy UTF-8 (never panics), and without
+/// `--jobs`, which cannot change any result, so manifests are identical
+/// whatever the number of jobs.
+pub fn recorded_command() -> Vec<String> {
+    let args: Vec<String> = std::env::args_os()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect();
+    let mut out = Vec::with_capacity(args.len());
+    let mut skip_next = false;
+    for a in args {
+        if skip_next {
+            skip_next = false;
+        } else if a == "--jobs" {
+            skip_next = true;
+        } else if !a.starts_with("--jobs=") {
+            out.push(a);
+        }
+    }
+    out
+}
+
+/// `target` relative to the directory `from`, if both can be resolved; uses
+/// `..` components as needed.
+pub fn relative_to(from: &Path, target: &Path) -> Option<PathBuf> {
+    let from = std::fs::canonicalize(from).ok()?;
+    let target = std::fs::canonicalize(target).ok()?;
+    let f: Vec<_> = from.components().collect();
+    let t: Vec<_> = target.components().collect();
+    let common = f.iter().zip(&t).take_while(|(a, b)| a == b).count();
+    if common == 0 {
+        return None; // different roots (e.g. Windows drives)
+    }
+    let mut rel = PathBuf::new();
+    for _ in common..f.len() {
+        rel.push("..");
+    }
+    for c in &t[common..] {
+        rel.push(c.as_os_str());
+    }
+    Some(rel)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -128,33 +175,51 @@ pub fn reproduce(m: &Manifest, base_dir: &Path) -> Result<Reproduction, String> 
         }
         Start::Snapshot {
             path,
+            relative_path,
             file_hash: expected,
         } => {
-            // As recorded, else next to the manifest (a moved results folder).
-            let candidates = [
-                path.clone(),
-                base_dir.join(path),
-                base_dir.join(path.file_name().unwrap_or_default()),
-            ];
-            let p = candidates
-                .iter()
-                .find(|c| c.is_file())
-                .cloned()
-                .ok_or_else(|| format!("snapshot {} not found", path.display()))?;
-            let actual = file_hash(&p)?;
-            if &actual != expected {
+            // Relative to the manifest first (a moved results folder), then
+            // as recorded, then next to the manifest; the first file whose
+            // bytes match the recorded hash wins.
+            let mut candidates: Vec<PathBuf> = Vec::new();
+            if let Some(rel) = relative_path {
+                candidates.push(base_dir.join(rel));
+            }
+            candidates.push(path.clone());
+            candidates.push(base_dir.join(path.file_name().unwrap_or_default()));
+            let existing: Vec<&PathBuf> = candidates.iter().filter(|c| c.is_file()).collect();
+            if existing.is_empty() {
+                return Err(format!("snapshot {} not found", path.display()));
+            }
+            let mut found = None;
+            for c in &existing {
+                if &file_hash(c)? == expected {
+                    found = Some((*c).clone());
+                    break;
+                }
+            }
+            let p = found.ok_or_else(|| {
+                format!(
+                    "snapshot {} has changed since the run (no candidate matches hash {expected})",
+                    existing[0].display()
+                )
+            })?;
+            let mut sim = Simulation::load_snapshot(&p)?;
+            if sim.world.seed != m.seed {
                 return Err(format!(
-                    "snapshot {} has changed since the run (hash {actual}, manifest says {expected})",
-                    p.display()
+                    "snapshot is seed {}, but the manifest is for seed {}",
+                    sim.world.seed, m.seed
                 ));
             }
-            let mut sim = Simulation::load_snapshot(&p)?;
             if sim.config != m.config {
                 sim.set_config(m.config.clone())?;
             }
             sim
         }
     };
+    if m.final_tick != m.start_tick + m.ticks {
+        return Err("the manifest's ticks do not add up (start + ticks != final)".into());
+    }
     if sim.tick != m.start_tick {
         return Err(format!(
             "start tick {} does not match the manifest's {}",
@@ -249,6 +314,11 @@ mod tests {
         // A manifest that claims a different run is not reproduced.
         let mut bad = m.clone();
         bad.ticks -= 1;
+        assert!(
+            reproduce(&bad, &out).unwrap_err().contains("do not add up"),
+            "inconsistent tick counts are an error"
+        );
+        bad.final_tick -= 1;
         assert!(!reproduce(&bad, &out).unwrap().matches);
         // A changed snapshot file is refused.
         std::fs::write(&snap, "{}").unwrap();

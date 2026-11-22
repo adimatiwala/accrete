@@ -119,8 +119,10 @@ pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
     let start_state_hash = hash::hex(sim.state_hash());
     let start = match opts.loaded_from {
         Some(p) => crate::manifest::Start::Snapshot {
-            // Absolute, so the manifest works from any directory.
+            // Absolute, so the manifest works from any directory; and relative
+            // to the output folder, so a moved results folder still works.
             path: std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()),
+            relative_path: crate::manifest::relative_to(opts.out, p),
             file_hash: crate::manifest::file_hash(p).unwrap_or_else(|e| {
                 eprintln!("error: {e}");
                 std::process::exit(1)
@@ -130,6 +132,8 @@ pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
     };
     let mut frames: Vec<(Canvas, Canvas)> = Vec::new();
     let mut extinct = sim.population() == 0;
+    let mut snap_pngs: Vec<String> = Vec::new();
+    let mut frames_written: Vec<String> = Vec::new();
     if timelapse.contains(&sim.day()) {
         frames.push((
             frame(&sim, Overlay::Biome, 3),
@@ -150,7 +154,9 @@ pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
             ));
         }
         if opts.snap_every > 0 && d % opts.snap_every == 0 {
-            snapshot(&sim, opts.out, &format!("{label}_seed{seed}_day{d:03}"));
+            let name = format!("{label}_seed{seed}_day{d:03}");
+            snapshot(&sim, opts.out, &name);
+            snap_pngs.push(format!("{name}.png"));
         }
         if sim.population() == 0 && !extinct {
             extinct = true;
@@ -211,6 +217,8 @@ pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
         let p2 = out.join(format!("{base}_timelapse_depletion.png"));
         Canvas::strip(&biome).save(&p1);
         Canvas::strip(&depl).save(&p2);
+        frames_written.push(format!("{base}_timelapse_biome.png"));
+        frames_written.push(format!("{base}_timelapse_depletion.png"));
         println!(
             "  timelapse days {:?}: {} and {}",
             timelapse,
@@ -229,18 +237,28 @@ pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
             path.display()
         );
     }
+    // Paths relative to the manifest's directory (the output folder).
     let mut outputs = vec![
         format!("{base}_metrics.csv"),
         format!("{base}_deaths.csv"),
         format!("{base}_final.png"),
     ];
+    outputs.extend(snap_pngs);
+    if !frames_written.is_empty() {
+        outputs.extend(frames_written);
+    }
     if let Some(p) = opts.save {
-        outputs.push(p.display().to_string());
+        outputs.push(
+            crate::manifest::relative_to(out, p)
+                .unwrap_or_else(|| p.to_path_buf())
+                .display()
+                .to_string(),
+        );
     }
     let manifest = crate::manifest::Manifest {
         format: crate::manifest::MANIFEST_FORMAT,
         build: crate::manifest::Build::current(),
-        command: std::env::args().collect(),
+        command: crate::manifest::recorded_command(),
         label: label.to_string(),
         seed,
         start,
