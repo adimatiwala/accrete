@@ -293,7 +293,7 @@ fn last(s: &Simulation) -> &accrete_core::simulation::metrics::DailyMetrics {
     s.metrics.last().expect("a finished run has metrics")
 }
 
-fn outcomes(s: &Simulation) -> Vec<f64> {
+pub fn outcomes(s: &Simulation) -> Vec<f64> {
     OUTCOMES.iter().map(|(_, f)| f(s)).collect()
 }
 

@@ -1065,7 +1065,7 @@ These point to the next experiments: longer trips (more scarcity), and goods tha
 
 * **Run storage:** manifests and `accrete reproduce` are done (A.19). Still to do: Parquet metrics, periodic snapshots per run, and a SQLite or DuckDB index of runs.
 * **Parameter → behaviour mapping:**
-  * a Latin-hypercube or Sobol design over parameters, with about 10 seeds per point;
+  * grid and Latin-hypercube sweeps over parameters, across seeds, are done (A.20); Sobol designs are still to do;
   * surrogate models (Gaussian process or gradient-boosted trees) from parameters to emergence metrics;
   * Sobol or Morris sensitivity indices and partial-dependence curves.
 
@@ -1391,3 +1391,32 @@ Phase 2 (Section 9) asks for results across many seeds with uncertainty, and A.1
   * `--save` over `--load` refused;
   * a moved results folder and both branch arms reproducing;
   * `--jobs 0` rejected.
+### A.20 Parameter sweeps (A.10, "parameter → behaviour mapping")
+
+`accrete sweep` runs the model over a set of parameter points, each on several seeds, and reports how the outcomes respond.
+
+| Piece | What and why |
+|---|---|
+| **Grid** (`--param section.key=a,b,c`, repeatable) | The cartesian product of the listed values, with the first parameter varying slowest. Booleans and other non-numeric keys work here. |
+| **Latin hypercube** (`--lhs N --param section.key=lo..hi`) | N points that cover each parameter's range evenly: every parameter gets exactly one point in each of its N strata, at a random spot inside the stratum. Numeric keys only; integer keys get rounded values. The design draws from a new RNG stream, `Design = 9`, appended under the never-renumber rule. Simulations never use it, so no hash changes. `--design-seed` makes a design reproducible. |
+| **Validation first** | Every point is applied to the base config (`run::try_apply_override`, a non-panicking version of `--set`) before anything runs. A bad key or value, a range in a grid, a list in an LHS, a duplicate key, or more than 100,000 runs is an error up front. |
+| **Parallel, deterministic** | (point, seed) pairs run through `parallel::map_ordered`, and outputs are byte-identical whatever `--jobs` is (tested). Each run writes `pNNN_seedS_*` metrics and a manifest, so any single run can be checked with `accrete reproduce`. |
+| **Outputs** | `sweep_design.json` (mode, design seed, parameters, seeds, days and every point), `sweep_runs.csv` (one row per point and seed: parameter values, the shared `OUTCOMES`, the final state hash), and `sweep_points.csv` (per point: the mean and 95 % t-interval of each outcome across seeds). |
+
+**Demo** (`--param resources.food_regrowth=0.03,0.06,0.1,0.15 --seed 1-3 --days 150 --jobs 8`; 12 runs in 15 s):
+
+| Food regrowth | Population, day 150 (mean, 95 % CI) | Births per adult-day | Clustering R |
+|---|---|---|---|
+| 0.03 | 71 [52, 89] | 0.0046 | 1.06 |
+| 0.06 | 165 [141, 189] | 0.0108 | 0.93 |
+| 0.10 | 263 [194, 331] | 0.0147 | 0.82 |
+| 0.15 | 353 [271, 435] | 0.0185 | 0.68 |
+
+A smooth dose-response: more food gives more people, higher per-capita fertility and tighter clustering, consistent with A.18. Three seeds and 150 days, so this demonstrates the tool rather than establishing a result.
+
+**Tests:**
+* Parameter parsing: values, deduplication, ranges, and bad input.
+* Grids are cartesian products in the stated order.
+* A Latin hypercube puts one point in every stratum, is reproducible from its design seed, and gives integers for integer keys.
+* Invalid designs and points are rejected.
+* An end-to-end sweep writes the expected rows and per-run manifests, with byte-identical files for `--jobs 1` and `--jobs 4`.

@@ -18,6 +18,7 @@ mod image;
 mod manifest;
 mod parallel;
 mod run;
+mod sweep;
 mod trace;
 
 use std::path::PathBuf;
@@ -118,6 +119,36 @@ enum Cmd {
         #[arg(long, default_value_t = 1)]
         jobs: usize,
         /// Config overrides applied to the shared base (repeatable).
+        #[arg(long = "set")]
+        sets: Vec<String>,
+    },
+    /// Sweep config parameters over seeds: a grid (`--param key=a,b,c`) or a
+    /// Latin hypercube (`--lhs N` with `--param key=lo..hi`).
+    Sweep {
+        /// A parameter to vary (repeatable): `section.key=a,b,c` or
+        /// `section.key=lo..hi` (ranges need --lhs).
+        #[arg(long = "param", required = true)]
+        params: Vec<String>,
+        /// Latin-hypercube points (all parameters must be ranges).
+        #[arg(long)]
+        lhs: Option<usize>,
+        /// Seed for the Latin-hypercube design (the `Design` RNG stream).
+        #[arg(long, default_value_t = 1)]
+        design_seed: u64,
+        /// Seeds per point (comma separated, ranges like 1-10).
+        #[arg(long, default_value = "1", value_delimiter = ',')]
+        seed: Vec<String>,
+        #[arg(long, default_value_t = 100)]
+        days: u32,
+        #[arg(short, long, default_value = "results/sweep")]
+        out: PathBuf,
+        /// Runs in parallel; outputs are identical whatever the value.
+        #[arg(long, default_value_t = 1)]
+        jobs: usize,
+        /// Check conservation and bounds every tick (slow).
+        #[arg(long)]
+        check: bool,
+        /// Config overrides applied to the base before the sweep (repeatable).
         #[arg(long = "set")]
         sets: Vec<String>,
     },
@@ -342,6 +373,40 @@ fn main() {
                     check,
                     only,
                     jobs,
+                },
+            );
+        }
+        Cmd::Sweep {
+            params,
+            lhs,
+            design_seed,
+            seed,
+            days,
+            out,
+            jobs,
+            check,
+            sets,
+        } => {
+            let mut config = config;
+            for kv in &sets {
+                config = run::try_apply_override(&config, kv).unwrap_or_else(|e| fail(&e));
+            }
+            let params = params
+                .iter()
+                .map(|p| sweep::parse_param(p))
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap_or_else(|e| fail(&e));
+            sweep::run_sweep(
+                &config,
+                sweep::SweepArgs {
+                    params,
+                    lhs,
+                    design_seed,
+                    seeds: parse_seed_list(&seed).unwrap_or_else(|e| fail(&e)),
+                    days,
+                    out,
+                    jobs,
+                    check,
                 },
             );
         }

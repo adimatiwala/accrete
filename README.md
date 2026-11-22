@@ -45,6 +45,8 @@ cargo run --release -p accrete-cli -- experiments --seed 1,2,3 --days 300 --only
 
 # Phase 2: ten seeds in parallel, with 95% intervals in emergence_aggregate.csv
 cargo run --release -p accrete-cli -- experiments --seed 1-10 --jobs 8 --days 300 -o results/phase2
+# Parameter sweep: a grid over food regrowth, 3 seeds per point, in parallel
+cargo run --release -p accrete-cli -- sweep --param resources.food_regrowth=0.03,0.06,0.1,0.15 --seed 1-3 --days 150 --jobs 8
 # Every run writes a manifest; check that one reproduces exactly
 cargo run --release -p accrete-cli -- reproduce results/phase2/control_seed1_manifest.json
 

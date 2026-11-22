@@ -420,31 +420,72 @@ pub fn snapshot(sim: &Simulation, out: &Path, name: &str) {
     frame(sim, Overlay::Biome, 5).save(&path);
 }
 
-/// Apply a `section.key=value` override by round-tripping the config through TOML.
+/// Apply a `section.key=value` override by round-tripping the config through
+/// TOML. Panics with a clear message on a bad override (for `--set`).
 pub fn apply_override(config: &Config, kv: &str) -> Config {
-    let (path, value) = kv
-        .split_once('=')
-        .unwrap_or_else(|| panic!("--set expects key=value, got {kv}"));
+    try_apply_override(config, kv).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// The kind of value a config key holds, for parsing and sweeping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyKind {
+    Float,
+    Integer,
+    Boolean,
+    Other,
+}
+
+/// What kind of value `section.key` holds in `config`.
+pub fn key_kind(config: &Config, path: &str) -> Result<KeyKind, String> {
     let (section, key) = path
         .split_once('.')
-        .unwrap_or_else(|| panic!("--set key must be section.key, got {path}"));
+        .ok_or_else(|| format!("config key must be section.key, got {path}"))?;
+    let doc: toml::Table = toml::from_str(&config.to_toml_string()).expect("config toml");
+    let old = doc
+        .get(section)
+        .and_then(|t| t.as_table())
+        .ok_or_else(|| format!("unknown config section {section}"))?
+        .get(key)
+        .ok_or_else(|| format!("unknown key {section}.{key}"))?;
+    Ok(match old {
+        toml::Value::Float(_) => KeyKind::Float,
+        toml::Value::Integer(_) => KeyKind::Integer,
+        toml::Value::Boolean(_) => KeyKind::Boolean,
+        _ => KeyKind::Other,
+    })
+}
+
+/// Like `apply_override`, but returns an error instead of panicking.
+pub fn try_apply_override(config: &Config, kv: &str) -> Result<Config, String> {
+    let (path, value) = kv
+        .split_once('=')
+        .ok_or_else(|| format!("override expects key=value, got {kv}"))?;
+    let (section, key) = path
+        .split_once('.')
+        .ok_or_else(|| format!("config key must be section.key, got {path}"))?;
+    let value = value.trim();
     let mut doc: toml::Table = toml::from_str(&config.to_toml_string()).expect("config toml");
     let table = doc
         .get_mut(section)
         .and_then(|t| t.as_table_mut())
-        .unwrap_or_else(|| panic!("unknown config section {section}"));
+        .ok_or_else(|| format!("unknown config section {section}"))?;
     let old = table
         .get(key)
-        .unwrap_or_else(|| panic!("unknown key {section}.{key}"));
+        .ok_or_else(|| format!("unknown key {section}.{key}"))?;
+    let bad = |what: &str| format!("{section}.{key} expects {what}, got {value:?}");
     let new = match old {
-        toml::Value::Float(_) => toml::Value::Float(value.parse().expect("float value")),
-        toml::Value::Integer(_) => toml::Value::Integer(value.parse().expect("integer value")),
-        toml::Value::Boolean(_) => toml::Value::Boolean(value.parse().expect("bool value")),
+        toml::Value::Float(_) => toml::Value::Float(value.parse().map_err(|_| bad("a number"))?),
+        toml::Value::Integer(_) => {
+            toml::Value::Integer(value.parse().map_err(|_| bad("an integer"))?)
+        }
+        toml::Value::Boolean(_) => {
+            toml::Value::Boolean(value.parse().map_err(|_| bad("true or false"))?)
+        }
         _ => toml::Value::String(value.to_string()),
     };
     table.insert(key.to_string(), new);
     Config::from_toml_str(&toml::to_string(&doc).expect("toml"))
-        .unwrap_or_else(|e| panic!("override {kv}: {e}"))
+        .map_err(|e| format!("override {kv}: {e}"))
 }
 
 #[cfg(test)]
