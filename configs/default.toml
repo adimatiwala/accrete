@@ -287,6 +287,10 @@ surplus_threshold_food = 4.0
 price_learning = 0.30000001192092896
 price_gossip = 0.20000000298023224
 
+[culture]
+enabled = false
+rate = 0.05000000074505806
+
 [disruption]
 scripted = []
 

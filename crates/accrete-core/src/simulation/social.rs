@@ -270,6 +270,8 @@ impl Simulation {
         for (from, to, to_id) in [(x, y, idy), (y, x, idx)] {
             let teller = &self.agents[from];
             let teller_price = teller.memory.tool_price;
+            let teller_traits = teller.traits;
+            let teller_return = teller.forage_rate;
             if teller.memory.reciprocity(to_id) < 0.0 {
                 continue; // keep quiet with someone who treated me badly
             }
@@ -299,6 +301,20 @@ impl Simulation {
                 }
             }
             listener.stats.tips_received += learned;
+            // Payoff-biased social learning (A.27): copy a little from someone
+            // who says foraging goes better for them.
+            if self.config.culture.enabled && teller_return > listener.forage_rate {
+                let gap = ((teller_return - listener.forage_rate) / listener.forage_rate.max(1e-3))
+                    .min(1.0);
+                let k = self.config.culture.rate * gap * (0.5 + 0.5 * listener.traits.sociability);
+                let t = &mut listener.traits;
+                t.curiosity += k * (teller_traits.curiosity - t.curiosity);
+                t.caution += k * (teller_traits.caution - t.caution);
+                t.sociability += k * (teller_traits.sociability - t.sociability);
+                t.diligence += k * (teller_traits.diligence - t.diligence);
+                *t = t.clamped();
+                self.today.trait_copies += 1;
+            }
             // Talk turns to prices: the listener moves toward the teller's
             // believed exchange rate (A.26).
             if teller_price > 0.0 && self.config.tools.enabled {

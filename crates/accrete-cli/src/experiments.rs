@@ -76,6 +76,12 @@ pub const EXPERIMENTS: &[Experiment] = &[
         description: "knowledge sharing disabled (social.share_enabled = false; research program H3)",
         apply: |c| c.social.share_enabled = false,
     },
+    Experiment {
+        name: "culture",
+        label: "culture",
+        description: "payoff-biased social learning enabled (culture.enabled = true; research program H5)",
+        apply: |c| c.culture.enabled = true,
+    },
 ];
 
 /// Columns of `emergence_summary.csv`. `trades_*` and `total_*` columns are
@@ -347,6 +353,11 @@ pub const OUTCOMES: &[Outcome] = &[
         f64::from(last(s).tool_holders_share)
     }),
     ("tool_price_cv", |s| f64::from(last(s).tool_price_cv)),
+    // Culture (A.27).
+    ("moran_curiosity", |s| f64::from(last(s).moran_curiosity)),
+    ("moran_diligence", |s| f64::from(last(s).moran_diligence)),
+    ("mean_caution", |s| f64::from(last(s).mean_caution)),
+    ("mean_sociability", |s| f64::from(last(s).mean_sociability)),
 ];
 
 /// Zipf exponent of home-cluster sizes (residents) at the final state: minus

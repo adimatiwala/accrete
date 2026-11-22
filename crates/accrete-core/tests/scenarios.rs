@@ -448,3 +448,48 @@ fn a_tool_speeds_gathering_and_wears_out() {
     sim.check_invariants()
         .expect("worn tools are accounted for");
 }
+
+// ---------------------------------------------------------------------------
+// Culture: payoff-biased social learning (A.27).
+// ---------------------------------------------------------------------------
+
+fn culture_pair(enabled: bool) -> Simulation {
+    let mut c = config();
+    c.culture.enabled = enabled;
+    let mut sim = Scenario::load(&scenario_path("culture_pair.toml"))
+        .unwrap()
+        .build(&c)
+        .unwrap();
+    // Agent 1 says foraging goes much better for it.
+    sim.agents[0].forage_rate = 1.0;
+    sim.agents[1].forage_rate = 2.0;
+    sim
+}
+
+#[test]
+fn the_worse_forager_copies_the_better_one() {
+    let mut sim = culture_pair(true);
+    let before = (sim.agents[0].traits, sim.agents[1].traits);
+    for _ in 0..8 {
+        sim.step();
+    }
+    let (learner, model) = (sim.agents[0].traits, sim.agents[1].traits);
+    assert!(
+        learner.curiosity > before.0.curiosity,
+        "moved toward the better forager"
+    );
+    assert!(learner.caution > before.0.caution);
+    // The better forager does not copy the worse one.
+    assert_eq!(model, before.1);
+    assert!(sim.today.trait_copies > 0, "learning events are counted");
+}
+
+#[test]
+fn no_learning_when_culture_is_disabled() {
+    let mut sim = culture_pair(false);
+    let before = sim.agents[0].traits;
+    for _ in 0..8 {
+        sim.step();
+    }
+    assert_eq!(sim.agents[0].traits, before);
+}

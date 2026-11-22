@@ -47,7 +47,7 @@ use crate::world::World;
 
 /// Snapshot format version. Bump it whenever the serialized layout or the
 /// meaning of a saved field changes; older files are then rejected.
-pub const SNAPSHOT_FORMAT: u32 = 5;
+pub const SNAPSHOT_FORMAT: u32 = 6;
 
 /// Everything needed to resume a simulation exactly.
 #[derive(Clone, Debug, Serialize, Deserialize)]
