@@ -1651,3 +1651,24 @@ The viewer showed coloured dots keyed to internal goal ids, which means nothing 
 **Verified:**
 * `--screenshot` at day 0 (welcome card) and day 220 (seed 2: named hamlet, ticker, legend, biography).
 * Name-stability unit test; viewer tests pass.
+
+### A.29 Follow-up experiments (E2b, E5b) and the working paper
+
+**E2b: no division of labour, because the market is too small.** `sweep --set tools.enabled=true --param resources.stone_threshold=0.6,0.75,0.85 --param skills.practice_max=0.3,1.0 --seed 1-5 --days 300` tested the two interventions predicted in A.26. Neither produced specialists:
+* **Increasing returns** (`practice_max` 1.0) raise the crafter share about 2.5×, but it stays below 1 % of adults, and specialisation falls (0.029 → 0.016).
+* **Scarce, localised stone** shrinks the tool economy instead of concentrating it: tool holders fall from 46 % to 9 %, specialisation from 0.029 to 0.006, and trades and Gini fall with them.
+
+The binding constraint is finding a counterparty: barter happens only between co-located agents, and nobody remembers who sells what. This is Smith's "division of labour is limited by the extent of the market", with the market equal to daily encounters. Prediction for the next PR: memory of past partners' surplus goods should raise specialisation.
+
+**E5b: production creates the conditions for culture** (the H5 follow-up proposed in A.27). With tools on (which makes payoffs trait-sensitive), culture on vs off, seeds 1–15, 300 days, paired:
+
+| Trait | ΔMoran's I [95 % CI] | Seeds up | p |
+|---|---|---|---|
+| caution | +0.122 [+0.053, +0.190] | 13/15 | 0.002 |
+| curiosity | +0.092 [+0.032, +0.151] | 13/15 | 0.005 |
+| sociability | +0.113 [+0.059, +0.166] | 13/15 | 0.0005 |
+| diligence | +0.074 [+0.013, +0.136] | 12/15 | 0.022 |
+
+All four effects survive Holm correction. Population, Gini, trades and clustering R are unchanged (all CIs span 0). The same learning rule is inert in the foraging economy (A.27) and creates trait geography in the production economy, which is consistent with cultural-evolution theory: payoff-biased transmission needs payoffs that covary with behaviour. The A.27 hamlet effect did **not** replicate under tools (−0.7 [−1.7, +0.2]) and is withdrawn.
+
+**Paper.** `docs/paper/accrete.tex` (compiled to `accrete.pdf` with Tectonic: `tectonic -X compile docs/paper/accrete.tex`) is a working paper. It gives the full mathematical model (needs, utility, regrowth, barter, price learning, culture, pipeline), the reproducibility guarantees, the measurement definitions (Clark–Evans, Moran's I, Gini, specialisation), the statistical protocol (paired t, Saltelli/Jansen estimators, bootstrap, noise share, Holm), the results of E1, E2, E2b and E5 with figures, the limitations and the next experiments.
