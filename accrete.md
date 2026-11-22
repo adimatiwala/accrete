@@ -1520,3 +1520,33 @@ New suite and sweep outcomes (`experiments::OUTCOMES`):
 * The full release suite passes, with every golden state hash unchanged.
 * The debug suite passes.
 * The demo was reproduced with `--jobs 3`.
+
+### A.25 Sobol' global sensitivity analysis (A.10; research program §5)
+
+`accrete sweep --sobol N` adds a third design to the sweep, after grid and Latin hypercube. It answers **"which knobs matter for which emergent structure"**: the parameter-to-behaviour map asked for in A.10.
+
+| Piece | What and why |
+|---|---|
+| **Design** | A Saltelli design: a Sobol' low-discrepancy sequence (Joe–Kuo direction numbers, up to 21 dimensions, so 10 parameters) gives `A` and `B` (`N × k`). Each row adds the `k` hybrids `AB^(i)`, for `N(k + 2)` points laid out row by row. Integer keys map onto their integer range exactly as in the Latin hypercube. |
+| **Estimators** | First order: Saltelli et al. (2010). Total order: Jansen (1999). Both are computed on per-point means over seeds. |
+| **Uncertainty** | 95 % percentile bootstrap (1,000 resamples of the `N` rows, from the `Design` stream at `--design-seed`). |
+| **Stochastic model** | `noise_share` = the mean within-point variance of the seed-mean divided by the output variance. An index is only meaningful where the noise share is small. Without this, any index on a stochastic simulator is uninterpretable. |
+| **Reuse** | Validation, parallel execution (`--jobs`-independent outputs), manifests and the run index are the sweep's, unchanged. The output is `sobol_indices.csv`, and the largest total index per outcome is printed. |
+
+**Validation:** the Sobol' sequence fills every one of 64 strata exactly once in all 21 dimensions. On the Sobol' g-function (`a = 0, 1, 9, 99`; N = 4,096) the estimated first-order and total indices are within 0.03 of the analytic values. Undefined outputs are refused per outcome.
+
+**Pilot study** (E1/E4 scope): k = 6 parameters, N = 32, seeds 1–2, 200 days, 512 runs. The parameters were `resources.food_regrowth` 0.04–0.2, `decision.social_weight` 0–0.8, `decision.kin_weight` 0–0.6, `homes.site_food_per_person` 3–8, `infrastructure.household_weight` 0–1, and `life.reproduce_chance` 0.15–0.5. Total-order indices (95 % CI):
+
+| Outcome | regrowth | site food | reproduce chance | social | kin | household | noise share |
+|---|---|---|---|---|---|---|---|
+| population | 0.64 [0.41, 0.98] | 0.23 [0.15, 0.39] | 0.07 [0.03, 0.15] | 0.00 [0.00, 0.01] | 0.01 [0.01, 0.02] | 0.00 | 0.02 |
+| clustering R | 0.75 [0.47, 1.13] | 0.22 [0.13, 0.36] | 0.02 | **0.02 [0.01, 0.03]** | **0.03 [0.01, 0.06]** | 0.01 | 0.08 |
+| hamlets | 0.51 [0.19, 1.60] | 0.50 [0.21, 1.22] | 0.25 [0.05, 0.84] | 0.09 [0.02, 0.35] | 0.04 [0.01, 0.14] | 0.04 | 0.11 |
+
+**Findings** (pilot; total indices are well determined, first-order ones are not at N = 32):
+1. **Aggregation is ecologically, not socially, determined.** Clustering and population are governed by food productivity and the agents' land-perception threshold. The two motives added to *produce* aggregation (sociability and kin ties) explain at most about 6 % of the variance in clustering, even across their whole range. Kin hamlets exist (A.9), but whether homes cluster at all is set by local surplus. This sharpens H1, and it is the strongest evidence yet that structure in this model comes from the economy of food rather than from social preference.
+2. **Hamlet formation is interactive.** ST far exceeds S1 for regrowth (0.51 vs 0.18) and site food. Hamlets need surplus *and* permissive land perception together, consistent with a threshold (H1 predicts a phase transition; E1's grid will locate it).
+3. **Household concern does not matter for any structural outcome** (ST ≤ 0.04). Road tiles are almost pure noise (noise share 0.86), as expected given that roads barely form (A.9).
+4. **Noise limits some metrics.** Foraging radius (0.74), largest-cluster share (0.66) and Moran's I (0.49) are dominated by seed noise at 2 seeds; their indices are not interpreted.
+
+**Next:** N ≥ 128 with 5 seeds for the headline outcomes, so first-order indices separate from interactions; and the E1 regrowth × land-threshold grid to map the transition.
