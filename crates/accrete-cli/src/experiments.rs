@@ -309,7 +309,66 @@ pub const OUTCOMES: &[Outcome] = &[
         }
     }),
     ("travel_per_food_run", travel_per_food_run),
+    // Observatory (A.24): inequality, settlement structure, migration,
+    // trade network, cultural geography.
+    ("wealth_gini", |s| f64::from(last(s).wealth_gini)),
+    ("largest_cluster_share", |s| {
+        f64::from(last(s).largest_cluster_share)
+    }),
+    ("rank_size_zeta", rank_size_zeta),
+    ("moves_per_person_year", moves_per_person_year),
+    ("trade_pairs_30d", |s| f64::from(last(s).trade_pairs_30d)),
+    ("trade_degree_gini", |s| {
+        f64::from(last(s).trade_degree_gini)
+    }),
+    ("trade_cross_household_share", |s| {
+        f64::from(last(s).trade_cross_household_share)
+    }),
+    ("moran_caution", |s| f64::from(last(s).moran_caution)),
+    ("moran_sociability", |s| {
+        f64::from(last(s).moran_sociability)
+    }),
 ];
+
+/// Zipf exponent of home-cluster sizes (residents) at the final state: minus
+/// the OLS slope of ln(size) on ln(rank), over clusters of at least two homes.
+/// Undefined (NaN) below three such clusters. Analysis output only (logarithms
+/// are fine here; nothing feeds back into a simulation).
+#[allow(clippy::disallowed_methods)]
+fn rank_size_zeta(s: &Simulation) -> f64 {
+    let sizes: Vec<f64> = accrete_core::simulation::emergence::cluster_sizes(
+        &s.world,
+        s.config.settlement.radius as i32,
+    )
+    .iter()
+    .filter(|c| c.0 >= 2)
+    .map(|c| f64::from(c.1))
+    .collect();
+    if sizes.len() < 3 {
+        return f64::NAN;
+    }
+    let pts: Vec<(f64, f64)> = sizes
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (((i + 1) as f64).ln(), v.max(1.0).ln()))
+        .collect();
+    let n = pts.len() as f64;
+    let mx = pts.iter().map(|p| p.0).sum::<f64>() / n;
+    let my = pts.iter().map(|p| p.1).sum::<f64>() / n;
+    let sxy: f64 = pts.iter().map(|p| (p.0 - mx) * (p.1 - my)).sum();
+    let sxx: f64 = pts.iter().map(|p| (p.0 - mx) * (p.0 - mx)).sum();
+    -sxy / sxx
+}
+
+/// Home moves per person-year over the whole run (person-days from the daily
+/// population).
+fn moves_per_person_year(s: &Simulation) -> f64 {
+    let person_days: f64 = s.metrics.iter().map(|m| f64::from(m.population)).sum();
+    if person_days <= 0.0 {
+        return f64::NAN;
+    }
+    f64::from(sum_home_moves(s)) / (person_days / 365.0)
+}
 
 fn travel_per_food_run(s: &Simulation) -> f64 {
     let moved: f64 = s.metrics.iter().map(|m| m.tiles_moved as f64).sum();

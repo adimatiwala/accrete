@@ -1485,3 +1485,38 @@ It also covers:
 * **Agriculture is deferred** until the current regimes are mapped, so its effect can be measured against a known baseline.
 
 **Verification:** documentation only; no code or results changed.
+
+### A.24 Observatory metrics (research program §4)
+
+These are measurement-only metrics for the hypotheses in `docs/research/PROGRAM.md`. Agents never read them.
+
+| Metric (`DailyMetrics` column) | Definition |
+|---|---|
+| `wealth_gini` | Gini of household wealth: goods held by residents plus the home's chests, in weight units, over occupied homes |
+| `largest_cluster_share`, `clusters_2plus` | Home clusters by single linkage at the settlement radius (candidates included): the largest cluster's share of the homed population, and the number of clusters with ≥ 2 homes |
+| `mean_move_distance` | Mean Chebyshev distance of the day's home moves |
+| `trade_pairs_30d`, `trade_mean_degree`, `trade_degree_gini`, `trade_cross_household_share`, `trade_repeat_share` | The barter network over the last 30 days: distinct pairs, mean partners per trader, Gini of partner counts, share of trades between different homes, share of trades with a repeat partner |
+| `moran_curiosity` … `moran_diligence` | Global Moran's I of each trait over occupied homes (a home's value is its residents' mean), with weights `1/(1 + d)` within 8 tiles. 0 when undefined |
+
+New suite and sweep outcomes (`experiments::OUTCOMES`):
+* `wealth_gini`, `largest_cluster_share`;
+* `rank_size_zeta`: minus the OLS slope of ln(size) on ln(rank), over clusters with ≥ 2 homes. It is computed in the CLI, because logarithms are banned in core; NaN below three clusters;
+* `moves_per_person_year`: run-total home moves per person-year;
+* `trade_pairs_30d`, `trade_degree_gini`, `trade_cross_household_share`;
+* `moran_caution`, `moran_sociability`.
+
+**Decisions:**
+* **The trade log stays out of the state hash.** It is a bounded `Vec<TradeRecord>` (the last 30 days, pruned daily) appended on each barter. Agents never read it. It is saved in snapshots (`SNAPSHOT_FORMAT` 3 → 4) so resumed runs measure identically, but it is not hashed. Every golden *state* hash is therefore unchanged, which proves the PR changes no behaviour; only `snapshot_seed1_t100` (file bytes) was re-blessed for the format bump.
+* **Clusters for ζ include candidates.** Confirmed hamlets are too few (0–3 per seed) to fit a rank-size line.
+* **Moran's I weights:** an inverse-distance kernel capped at 8 tiles, roughly a foraging range, so neighbouring hamlets count but the far side of the map does not.
+
+**First measurements** (seeds 1–3, 200 days, `experiments --only trade`; paired differences with 95 % CIs):
+* **Barter has no economic role yet.** Turning trade off leaves population (+20 [−17, 57]), clustering R (−0.006 [−0.09, 0.08]), wealth Gini (−0.013 [−0.09, 0.07]), foraging radius and migration unchanged within noise. The control's network is small and sparse: 24 pairs in 30 days, about half of them between households. This supports H2's premise: there are no gains from trade to exploit yet.
+* **Trait geography without culture.** Moran's I is already 0.55 (caution) and 0.37 (sociability) with no social learning. Kin budding (children settle within 3 tiles of their birth home) plus inheritance (traits ± 0.1) produce spatially autocorrelated "family character". `PROGRAM.md` H5 was revised accordingly: learning must raise Moran's I above this kinship baseline.
+* **Settlement sizes are flat:** ζ ≈ 0.4, and the largest cluster holds about 5 % of the homed population. There is no primate settlement yet, which bears on H7.
+
+**Verification:**
+* Unit tests for the Gini (known values) and the trade-network statistics (pairs, degrees, repeats, window).
+* The full release suite passes, with every golden state hash unchanged.
+* The debug suite passes.
+* The demo was reproduced with `--jobs 3`.

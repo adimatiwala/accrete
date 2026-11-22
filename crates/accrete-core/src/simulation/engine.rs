@@ -85,6 +85,9 @@ pub struct Simulation {
     pub pathology_log: Vec<(u64, u32, PathologyKind)>,
     pub settlements: SettlementTracker,
     pub today: DayCounters,
+    /// Barters of the last 30 days, for trade-network measurement only.
+    /// Agents never read it, and it is not part of the state hash.
+    pub trade_log: Vec<crate::simulation::emergence::TradeRecord>,
     pub hit_cap: bool,
     /// Latest decision trace per agent (debugging; not part of the state hash).
     pub traces: BTreeMap<u32, Trace>,
@@ -152,6 +155,7 @@ impl Simulation {
             pathology_log: Vec::new(),
             settlements: SettlementTracker::default(),
             today: DayCounters::default(),
+            trade_log: Vec::new(),
             hit_cap: false,
             traces: BTreeMap::new(),
             intents: Vec::new(),
@@ -994,6 +998,8 @@ impl Simulation {
             }
         };
         if let Some(o) = old {
+            let from = self.world.homes[o as usize].pos;
+            self.today.home_move_distance_sum += f64::from(from.chebyshev(pos));
             self.leave_home(aid, o, tick);
             self.today.home_moves += 1;
             self.agents[i].stats.home_moves += 1;
@@ -1742,6 +1748,8 @@ impl Simulation {
         let m = self.collect_metrics(day);
         self.metrics.push(m);
         self.today = DayCounters::default();
+        let keep_from = (tick + 1).saturating_sub(TRADE_WINDOW_TICKS);
+        self.trade_log.retain(|r| r.tick >= keep_from);
     }
 
     fn collect_metrics(&self, day: u32) -> DailyMetrics {
@@ -1877,6 +1885,7 @@ impl Simulation {
             .filter(|&p| self.world.tile(p).is_land() && self.weather.in_drought(p))
             .count();
         m.drought_area = in_drought as f32 / land as f32;
+        self.observatory_metrics(&mut m);
         m.disrupted_tiles = DisruptionState::disrupted_tiles(&self.world);
         m.trail_tiles = self
             .world
@@ -2246,6 +2255,42 @@ fn random_choice(mut cands: Vec<Candidate>, rng: &mut Rng) -> Vec<Candidate> {
     // Stable: keeps the shuffled order of everything else.
     cands.sort_by_key(|c| c.kind == GoalKind::Idle);
     cands
+}
+
+/// Trades kept for network measurement (30 days).
+pub const TRADE_WINDOW_TICKS: u64 = 30 * TICKS_PER_DAY;
+
+impl Simulation {
+    /// Observatory metrics (A.24). Measurement only.
+    fn observatory_metrics(&self, m: &mut DailyMetrics) {
+        use crate::simulation::emergence as em;
+        let inv = &self.config.inventory;
+        m.wealth_gini = em::gini(&em::household_wealth(&self.world, &self.agents, inv));
+        let sizes = em::cluster_sizes(&self.world, self.config.settlement.radius as i32);
+        let homed: u32 = sizes.iter().map(|s| s.1).sum();
+        m.largest_cluster_share = sizes
+            .first()
+            .map_or(0.0, |s| s.1 as f32 / homed.max(1) as f32);
+        m.clusters_2plus = sizes.iter().filter(|s| s.0 >= 2).count() as u32;
+        m.mean_move_distance = if self.today.home_moves > 0 {
+            (self.today.home_move_distance_sum / f64::from(self.today.home_moves)) as f32
+        } else {
+            0.0
+        };
+        let since = (self.tick + 1).saturating_sub(TRADE_WINDOW_TICKS);
+        let net = em::trade_network(&self.trade_log, since);
+        m.trade_pairs_30d = net.pairs;
+        m.trade_mean_degree = net.mean_degree;
+        m.trade_degree_gini = net.degree_gini;
+        m.trade_cross_household_share = net.cross_household_share;
+        m.trade_repeat_share = net.repeat_share;
+        let moran =
+            |f: fn(&Agent) -> f32| em::morans_i(&self.world, &self.agents, 8, f).unwrap_or(0.0);
+        m.moran_curiosity = moran(|a| a.traits.curiosity);
+        m.moran_caution = moran(|a| a.traits.caution);
+        m.moran_sociability = moran(|a| a.traits.sociability);
+        m.moran_diligence = moran(|a| a.traits.diligence);
+    }
 }
 
 #[cfg(test)]

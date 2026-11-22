@@ -31,6 +31,8 @@ pub struct DayCounters {
     /// Sum and count of the distance from home of each food gathering tick.
     pub forage_distance_sum: f64,
     pub forage_distance_n: u64,
+    /// Sum of distances (tiles) of today's home moves.
+    pub home_move_distance_sum: f64,
     pub goal_ticks: [u64; GoalKind::COUNT],
 }
 
@@ -98,6 +100,27 @@ pub struct DailyMetrics {
     pub drought_area: f32,
     /// Tiles under an active route disruption.
     pub disrupted_tiles: u32,
+    /// Gini of household wealth (goods held by residents plus chests).
+    pub wealth_gini: f32,
+    /// Share of homed people living in the largest home cluster (R = settlement radius).
+    pub largest_cluster_share: f32,
+    /// Home clusters with at least two homes.
+    pub clusters_2plus: u32,
+    /// Mean distance (tiles) of today's home moves.
+    pub mean_move_distance: f32,
+    /// Trade network over the last 30 days: distinct trading pairs, mean
+    /// partners per trader, Gini of partner counts, share of trades between
+    /// households, share of trades with a repeat partner.
+    pub trade_pairs_30d: u32,
+    pub trade_mean_degree: f32,
+    pub trade_degree_gini: f32,
+    pub trade_cross_household_share: f32,
+    pub trade_repeat_share: f32,
+    /// Moran's I of each trait across homes (spatial autocorrelation; 0 = none).
+    pub moran_curiosity: f32,
+    pub moran_caution: f32,
+    pub moran_sociability: f32,
+    pub moran_diligence: f32,
     pub settlement_candidates: u32,
     pub hamlets: u32,
     pub villages: u32,
@@ -166,6 +189,19 @@ impl DailyMetrics {
             "mean_home_age_days",
             "drought_area",
             "disrupted_tiles",
+            "wealth_gini",
+            "largest_cluster_share",
+            "clusters_2plus",
+            "mean_move_distance",
+            "trade_pairs_30d",
+            "trade_mean_degree",
+            "trade_degree_gini",
+            "trade_cross_household_share",
+            "trade_repeat_share",
+            "moran_curiosity",
+            "moran_caution",
+            "moran_sociability",
+            "moran_diligence",
             "settlement_candidates",
             "hamlets",
             "villages",
@@ -239,6 +275,19 @@ impl DailyMetrics {
             format!("{:.1}", self.mean_home_age_days),
             format!("{:.4}", self.drought_area),
             self.disrupted_tiles.to_string(),
+            format!("{:.4}", self.wealth_gini),
+            format!("{:.4}", self.largest_cluster_share),
+            self.clusters_2plus.to_string(),
+            format!("{:.3}", self.mean_move_distance),
+            self.trade_pairs_30d.to_string(),
+            format!("{:.3}", self.trade_mean_degree),
+            format!("{:.4}", self.trade_degree_gini),
+            format!("{:.4}", self.trade_cross_household_share),
+            format!("{:.4}", self.trade_repeat_share),
+            format!("{:.4}", self.moran_curiosity),
+            format!("{:.4}", self.moran_caution),
+            format!("{:.4}", self.moran_sociability),
+            format!("{:.4}", self.moran_diligence),
             self.settlement_candidates.to_string(),
             self.hamlets.to_string(),
             self.villages.to_string(),
