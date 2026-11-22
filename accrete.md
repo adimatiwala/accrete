@@ -1630,3 +1630,24 @@ The learning dose is large: about 27,000 copying events per run, 0.27 per person
 3. **An unexpected exploratory effect:** culture increased hamlets (+0.8, 4/4 seeds with a change, CI excluding 0) without changing clustering R or population. It was not the primary outcome, and it is recorded for replication (10 seeds, 600 days) before any claim. One candidate mechanism is that copying a better forager's caution and diligence makes households more stable.
 
 **Next:** make payoffs trait-sensitive, then repeat E5. For example, run under tools (diligence changes crafting output) or under droughts concentrated in one region (caution pays where food fails).
+
+### A.28 Viewer story mode: making emergence legible to newcomers
+
+The viewer showed coloured dots keyed to internal goal ids, which means nothing to a first-time viewer. A new presentation module, `crates/accrete-viewer/src/story.rs`, reads the simulation and its event log and **never changes them** (no determinism impact; core untouched).
+
+| Feature | What it shows |
+|---|---|
+| **Names** | Stable, pronounceable names for people (hash of seed and id) and settlements (stem plus a terrain suffix: -ford by rivers, -wood, -hill, -crag, -field). |
+| **Roles** | People are coloured by what they are doing in plain words (gathering food, building, crafting, exploring, moving house, starting a family, resting), with an on-map legend. Elders get a ring; children are smaller; at high zoom a dot shows what someone carries. |
+| **Motion** | Movement is interpolated between ticks, with fading motion trails. |
+| **Effects** | Trade arcs between partners, pulses for births and deaths, rings for new homes, storage and crafted tools. |
+| **Narration** | A "What's happening" ticker covers births, deaths and their cause, new homes, first trades between pairs, roads, enlarged homes, droughts, hamlets forming, and a daily summary. |
+| **Settlements** | Named, shaded areas with population; candidates are labelled "N people settling". |
+| **Biography** | The inspector opens with who a person is, where and with whom they live, their family, and **why** they are doing what they do (the strongest positive utility term of the chosen option, in words). |
+| **Onboarding** | A welcome card on a fresh start. `--day` fast-forwards silently, then narrates the last two days so the ticker has context. |
+
+**Keys:** `N` toggles the story view (back to the goal colours); `J` shows family ties, lines from a person's home to a parent's home.
+
+**Verified:**
+* `--screenshot` at day 0 (welcome card) and day 220 (seed 2: named hamlet, ticker, legend, biography).
+* Name-stability unit test; viewer tests pass.
