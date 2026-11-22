@@ -1215,12 +1215,20 @@ impl Simulation {
                         let Some(cost) = world.step_in_cost(a.pos, next, &c.movement) else {
                             // Blocked (e.g. a route disruption the agent had
                             // not seen): it now knows, and re-plans.
+                            let path = world.tile(next).path_level;
+                            let d = world.disruption(next);
                             a.memory.note_changed(
                                 next,
-                                world.tile(next).path_level,
-                                world.disruption(next),
+                                path,
                                 tick,
                                 c.memory.changed_slots as usize,
+                            );
+                            a.memory.note_disruption(
+                                next,
+                                d,
+                                tick,
+                                a.pos,
+                                c.memory.disruption_slots as usize,
                             );
                             a.route = None;
                             break;
@@ -2002,6 +2010,7 @@ pub fn observe(a: &mut Agent, world: &World, c: &Config, r: &TickRates, tick: u6
     let mem_cfg = &c.memory;
     let home_slots = mem_cfg.home_slots as usize;
     let changed_slots = mem_cfg.changed_slots as usize;
+    let disruption_slots = mem_cfg.disruption_slots as usize;
     let mut seen: Vec<Pos> = Vec::with_capacity(169);
     world.vis.for_each_visible(world, a.pos, |p| seen.push(p));
     let mut amounts: Vec<(Pos, [f32; 3])> = Vec::with_capacity(seen.len());
@@ -2036,8 +2045,9 @@ pub fn observe(a: &mut Agent, world: &World, c: &Config, r: &TickRates, tick: u6
                 home_slots,
             );
         }
+        a.memory.note_changed(p, t.path_level, tick, changed_slots);
         a.memory
-            .note_changed(p, t.path_level, world.disruption(p), tick, changed_slots);
+            .note_disruption(p, world.disruption(p), tick, a.pos, disruption_slots);
     }
     if !mem_cfg.enabled {
         a.memory.forget_resources_not_in(|p| seen.contains(&p));

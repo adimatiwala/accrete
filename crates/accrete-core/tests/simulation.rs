@@ -4,7 +4,7 @@ mod common;
 
 use accrete_core::config::TICKS_PER_DAY;
 use accrete_core::simulation::events::{DeathCause, EventKind};
-use accrete_core::{Config, Simulation};
+use accrete_core::{Config, Pos, Simulation};
 
 fn checked() -> Config {
     let mut c = Config::default();
@@ -352,14 +352,10 @@ fn route_disruption_blocks_busy_trails_then_restores_them() {
     assert!(
         cut.agents.iter().any(|a| a
             .memory
-            .changed
+            .disruptions
             .iter()
             .any(|t| t.disruption == Disruption::Blocked))
-            || cut.agents.iter().all(|a| a
-                .memory
-                .changed
-                .iter()
-                .all(|t| t.disruption == Disruption::None)),
+            || cut.agents.iter().all(|a| a.memory.disruptions.is_empty()),
         "memories are consistent"
     );
     let random = |s: &Simulation| {
@@ -405,8 +401,100 @@ fn agents_stay_bounded_and_memory_fixed_size() {
             );
             assert!(a.memory.homes.len() <= m.home_slots as usize);
             assert!(a.memory.changed.len() <= m.changed_slots as usize);
+            assert!(a.memory.disruptions.len() <= m.disruption_slots as usize);
         }
     }
+}
+
+/// A large flood fills disruption memory without pushing trails and roads out
+/// of the changed-tile pool, and agents remember every blocked tile they see.
+#[test]
+fn large_flood_does_not_crowd_out_roads() {
+    use accrete_core::config::{DisruptionKind, ScriptedDisruption};
+    use accrete_core::world::{Disruption, PathLevel};
+    let mut c = Config::default();
+    c.sim.check_invariants = false;
+    let mut sim = Simulation::new(common::PRIMARY_SEED, c.clone());
+    sim.run(50 * TICKS_PER_DAY);
+    // Plant a trail and a road near a populated home, so some agent already
+    // has them in memory when the flood starts.
+    let home = sim
+        .world
+        .homes
+        .iter()
+        .max_by_key(|h| h.residents.len())
+        .expect("homes")
+        .pos;
+    let trail = Pos::new(home.x + 1, home.y);
+    let road = Pos::new(home.x + 2, home.y);
+    assert!(sim.world.contains(trail) && sim.world.tile(trail).is_land());
+    assert!(sim.world.contains(road) && sim.world.tile(road).is_land());
+    sim.world.tile_mut(trail).path_level = PathLevel::Trail;
+    sim.world.tile_mut(road).path_level = PathLevel::Road;
+    // Let agents see the paths.
+    sim.run(2 * TICKS_PER_DAY);
+    let knew_path = |s: &Simulation| {
+        s.agents
+            .iter()
+            .filter(|a| {
+                a.memory.believed_path(trail) == PathLevel::Trail
+                    || a.memory.believed_path(road) == PathLevel::Road
+            })
+            .count()
+    };
+    let before = knew_path(&sim);
+    assert!(before > 0, "nobody remembered the planted paths");
+
+    let disruption_slots = c.memory.disruption_slots as usize;
+    let mut cfg = c;
+    cfg.disruption.scripted.push(ScriptedDisruption {
+        start_day: 52,
+        days: 10,
+        kind: DisruptionKind::Block,
+        slow_factor: 3,
+        center: [home.x, home.y],
+        radius: 15,
+        busiest_tiles: 0,
+    });
+    sim.set_config(cfg).expect("valid");
+    sim.run(5 * TICKS_PER_DAY);
+
+    let after = knew_path(&sim);
+    assert!(
+        after >= before,
+        "the flood pushed path memories out: {before} agents before, {after} after"
+    );
+    let saw_flood = sim
+        .agents
+        .iter()
+        .filter(|a| {
+            a.memory
+                .disruptions
+                .iter()
+                .any(|d| d.disruption == Disruption::Blocked)
+        })
+        .count();
+    assert!(saw_flood > 0, "nobody remembered the flood");
+    // Every blocked tile an agent still believes blocked must be one it could
+    // have room for: the pool never exceeds its cap, and a radius-15 flood
+    // (~519 tiles) fits in the default 1,024 slots.
+    for a in &sim.agents {
+        assert!(a.memory.disruptions.len() <= disruption_slots);
+        assert!(
+            a.memory.disruptions.windows(2).all(|w| w[0].pos < w[1].pos),
+            "disruption memory must stay sorted"
+        );
+    }
+    let max_held = sim
+        .agents
+        .iter()
+        .map(|a| a.memory.disruptions.len())
+        .max()
+        .unwrap_or(0);
+    assert!(
+        max_held > 32,
+        "a large flood should hold more disruption tiles than the old shared pool of 32; held {max_held}"
+    );
 }
 
 #[test]

@@ -131,6 +131,7 @@ food_slots = 40
 wood_slots = 16
 stone_slots = 8
 changed_slots = 32
+disruption_slots = 1024
 home_slots = 16
 freshness_half_life_days = 5.0
 min_amount = 1.0

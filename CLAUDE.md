@@ -145,7 +145,7 @@ Cross-cutting ideas that take several files to see:
 - **`Simulation::set_config` returns `Result`.** It rejects `[world]` changes and a population cap below the current population.
 - **Debug-only settings stay out of hashes.** `sim.check_invariants` and `sim.event_log_capacity` are excluded from `Config::digest`, and `Config::differs_in_results` ignores them. Keep any new debugging-only setting out of both.
 - **Derived world data is not serialized.** The line-of-sight masks and the tile-to-homes index are rebuilt by `World::rebuild_derived`; the per-tile disruption index (`World::disruption_at`) is rebuilt from `Simulation::disruptions` by `DisruptionState::rebuild_index`. Use `World::enter_cost(p, …)`, not `movement::enter_cost(tile, …)`, wherever a disruption should apply, and `World::step_in_cost(from, to, …)` for an actual step (it lets an agent standing in a blocked area wade out; A* applies the same rule through `movement::entry_cost`). Any new derived structure must be rebuilt there too, or it will be missing in scenario worlds and after loading a snapshot.
-- **Memory pools:** the 64 resource-memory slots are split by type (food 40, wood 16, stone 8). One shared pool let abundant wood push out every food memory, and agents starved next to food.
+- **Memory pools:** the 64 resource-memory slots are split by type (food 40, wood 16, stone 8). One shared pool let abundant wood push out every food memory, and agents starved next to food. Route disruptions have their own pool (`memory.disruption_slots`, default 1,024), separate from the 32 trail/road slots, for the same reason: a large flood must not crowd roads out of memory.
 
 ## Keeping this file current
 

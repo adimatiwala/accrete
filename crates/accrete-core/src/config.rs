@@ -446,6 +446,9 @@ pub struct MemoryConfig {
     pub wood_slots: u32,
     pub stone_slots: u32,
     pub changed_slots: u32,
+    /// Route disruptions (floods, landslides) the agent has seen. Kept apart
+    /// from `changed_slots` so a large flood never crowds out trails and roads.
+    pub disruption_slots: u32,
     pub home_slots: u32,
     /// Freshness = half_life / (half_life + age), with half_life in days.
     pub freshness_half_life_days: f32,
@@ -465,6 +468,7 @@ impl Default for MemoryConfig {
             wood_slots: 16,
             stone_slots: 8,
             changed_slots: 32,
+            disruption_slots: 1024,
             home_slots: 16,
             freshness_half_life_days: 5.0,
             min_amount: 1.0,
