@@ -1260,8 +1260,10 @@ impl Simulation {
                 if moved_any {
                     a.moved = true;
                     a.pathology.last_progress_tick = tick;
-                } else if a.movement_points > 0 {
-                    // Accumulating MP for a costly tile counts as progress.
+                } else if a.route.is_some() && a.movement_points > 0 {
+                    // Still on a route, waiting for enough MP for the next
+                    // tile. A blocked step clears the route above, so it does
+                    // not count as progress (or the stuck detector never fires).
                     a.pathology.last_progress_tick = tick;
                 }
             }
@@ -2116,11 +2118,18 @@ fn observe_omniscient(a: &mut Agent, world: &World, c: &Config, tick: u64) {
     // the next re-observe (every `reobserve_ticks`) instead of lasting the
     // full unreachable window. mark_unreachable always records failed_targets.
     let cooling = |p: Pos, _res: Resource| a.memory.is_failed_target(p, tick);
+    // Blocked tiles are not offered as goals (except the tile the agent is
+    // already on, so it can still plan a way out). True route costs only
+    // hold if the pools never point at impassable targets.
+    let usable = |p: Pos| p == a.pos || world.disruption(p) != crate::world::Disruption::Blocked;
     // How many entries each pool can actually get: its size, or fewer if the
     // world holds fewer eligible tiles.
     let mut available = [0usize; 3];
     for i in 0..n as u32 {
         let p = world.dims.pos(i);
+        if !usable(p) {
+            continue;
+        }
         for res in Resource::ALL {
             if amount_at(p, res) >= mem.min_amount {
                 available[res.index()] += 1;
@@ -2137,7 +2146,7 @@ fn observe_omniscient(a: &mut Agent, world: &World, c: &Config, tick: u64) {
     let mut homes: Vec<(HomeId, Pos)> = Vec::new();
     type Found = [Vec<crate::agents::memory::ResourceMemory>; 3];
     let visit = |p: Pos, found: &mut Found, homes: &mut Vec<(HomeId, Pos)>| {
-        if !world.contains(p) {
+        if !world.contains(p) || !usable(p) {
             return;
         }
         for res in Resource::ALL {

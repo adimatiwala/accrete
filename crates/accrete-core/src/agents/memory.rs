@@ -672,6 +672,26 @@ impl AgentMemory {
             .map_or(Disruption::None, |i| self.disruptions[i].disruption)
     }
 
+    /// Drop the farthest entries until the pool fits `cap` (e.g. after
+    /// `set_config` lowers `memory.disruption_slots`).
+    pub fn trim_disruptions(&mut self, at: Pos, cap: usize) {
+        while self.disruptions.len() > cap {
+            let wi = self
+                .disruptions
+                .iter()
+                .enumerate()
+                .max_by(|a, b| {
+                    a.1.pos
+                        .dist2(at)
+                        .cmp(&b.1.pos.dist2(at))
+                        .then(a.1.pos.cmp(&b.1.pos))
+                })
+                .map(|(i, _)| i)
+                .expect("non-empty");
+            self.disruptions.remove(wi);
+        }
+    }
+
     pub fn mark_unreachable(&mut self, p: Pos, until: u64) {
         for m in self.resources.iter_mut().filter(|m| m.pos == p) {
             m.unreachable_until = until;

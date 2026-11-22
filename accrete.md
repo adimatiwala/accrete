@@ -898,7 +898,7 @@ Paste the following into Codex once the repository is open:
 
 This appendix records what was built from this specification, in the order it was built. It also records every place where the specification left a choice open (or was found not to work as written), what was chosen, and why. The base is commit `e5a15ce` (this document and a README only). All numbers below are defaults in `configs/default.toml`, which a test keeps identical to `Config::default()`.
 
-**Status against the plan:** Weeks 1–4 are complete. Phase 2 tooling is in place: the scarcity rerun (A.18), run manifests with `accrete reproduce`, seed ranges, parallel seeds and aggregates (A.19), and grid / Latin-hypercube parameter sweeps (A.20). Suggested next work in A.10: a SQLite/DuckDB run index, Parquet metrics, Sobol designs, and larger multi-seed Phase 2 campaigns.
+**Status against the plan:** Weeks 1–4 are complete. Phase 2 tooling is in place: the scarcity rerun (A.18), run manifests with `accrete reproduce`, seed ranges, parallel seeds and aggregates (A.19), and grid / Latin-hypercube parameter sweeps (A.20). Cross-PR review fixes for the stack are in A.21. Suggested next work in A.10: a SQLite/DuckDB run index, Parquet metrics, Sobol designs, and larger multi-seed Phase 2 campaigns.
 
 ### A.1 Repository and tooling
 
@@ -1423,9 +1423,29 @@ A smooth dose-response: more food gives more people, higher per-capita fertility
 * CLI: `--jobs 0` and semantically impossible / no-op points fail before anything is written.
 
 **Review fixes:**
-* **`Config::validate`.** Floats must be finite; non-preference quantities non-negative; fractions in `[0, 1]`; every `*_min` ≤ `*_max`; world size and movement points at least 1. Called from TOML load, `set_config`, and every `--set` / sweep point.
+* **`Config::validate`.** Floats must be finite; non-preference quantities non-negative; fractions in `[0, 1]`; every `*_min` ≤ `*_max`; world size and movement points at least 1; `memory.disruption_slots ≥ 1`. Called from TOML load, `set_config`, and every `--set` / sweep point.
 * **Canonical grid values** and **integer LHS strata** that stay inside the stated range.
 * **Size checks** before allocating a huge cartesian product; **overflow-safe** `points × seeds`.
 * **No-op grid points** (debugging-only settings) refused; overlapping `--set` / `--param` keys warned.
 * **`--set` recorded** in the design; design file written only after a successful sweep; label width grows past 999 points.
 * A failing run under `--jobs` names the point and seed; `--set` errors exit 2 instead of panicking.
+
+### A.21 Cross-PR review fixes (stack tip)
+
+Findings from review agents over PRs 5–12, fixed on `feat/sweeps` (the tip contains every layer):
+
+**Core (PRs 5–7):**
+* Omniscient observation skips `Blocked` tiles (except the agent's own), so the baseline no longer plans Rest into flooded homes.
+* `set_config` refuses a mid-run `sim.agent_kind` change, and refuses new scripted droughts/disruptions whose `start_day` is already past. Active disruptions stay in saved state when a scripted entry is removed.
+* Lowering `memory.disruption_slots` trims each agent's pool (farthest first).
+* A blocked movement step no longer counts as pathology "progress", so the stuck detector can fire.
+* `memory.disruption_slots = 0` is rejected by `Config::validate`.
+
+**CLI / Phase 2 (PRs 9–12):**
+* Writing a manifest refuses to overwrite a different run (same label/seed/out); pick another `--label` or `-o`.
+* Under `--jobs`, write/save failures `panic` instead of `process::exit`, so sibling seeds are not killed mid-run.
+* Aggregate (and summary) treat `clark_evans` / `forage_radius` as undefined when the population is extinct or has fewer than two homes; `travel_per_food_run` is shared between summary and aggregate.
+* Stale `emergence_summary.csv` / `emergence_aggregate.csv` are removed at the start of a suite.
+* `branch` rejects a silent global `--config` (use `--config-b`).
+* Snapshot `relative_path` is stored with `/`, and reproduce joins / splits on both separators, so a Windows-written manifest still finds its snapshot on macOS.
+* Viewer: a no-op intervention (e.g. halving already-zero regrowth) refuses to branch.

@@ -334,6 +334,11 @@ impl App {
         };
         let day = self.sim.day();
         let cfg = intervention_config(&self.sim.config, self.intervention, day, self.focus());
+        if !cfg.differs_in_results(&self.sim.config) {
+            let e = "intervention does not change results (e.g. food regrowth is already 0)".into();
+            self.say(format!("branch failed: {e}"));
+            return Err(e);
+        }
         let mut intervention = copy;
         if let Err(e) = intervention.set_config(cfg) {
             self.say(format!("branch failed: {e}"));

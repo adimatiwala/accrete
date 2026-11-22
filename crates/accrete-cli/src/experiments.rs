@@ -70,8 +70,8 @@ pub const EXPERIMENTS: &[Experiment] = &[
 /// run totals; the others are final-day values.
 pub const SUMMARY_HEADER: &str = "seed,experiment,days,population_control,population_intervention,population_diff,\
          trades_control,trades_intervention,trail_tiles_control,trail_tiles_intervention,\
-         road_tiles_control,road_tiles_intervention,forage_radius_control,forage_radius_intervention,\
-         travel_per_food_control,travel_per_food_intervention,\
+         road_tiles_control,road_tiles_intervention,         forage_radius_control,forage_radius_intervention,\
+         travel_per_food_run_control,travel_per_food_run_intervention,\
          hamlets_control,hamlets_intervention,clark_evans_control,clark_evans_intervention,\
          total_births_control,total_births_intervention,\
          total_deaths_deprivation_control,total_deaths_deprivation_intervention,\
@@ -159,6 +159,10 @@ pub fn run_suite(base: &Config, a: ExperimentsArgs) {
         run::check_label(e.label).unwrap_or_else(|err| fail(err));
     }
     std::fs::create_dir_all(&a.out).expect("create output dir");
+    // Drop stale suite outputs so a failed re-run cannot leave an old summary
+    // looking complete next to new per-seed files.
+    let _ = std::fs::remove_file(a.out.join("emergence_summary.csv"));
+    let _ = std::fs::remove_file(a.out.join("emergence_aggregate.csv"));
 
     println!(
         "emergence suite: {} experiment(s) × {} seed(s) × {} days → {}",
@@ -171,7 +175,8 @@ pub fn run_suite(base: &Config, a: ExperimentsArgs) {
         println!("  • {}: {}", e.name, e.description);
     }
 
-    // `trades_*` and `total_*` columns are run totals; others are final-day.
+    // `trades_*` and `total_*` columns are run totals; others are final-day
+    // (except travel_per_food_run, which matches the aggregate).
     let mut summary = String::from(SUMMARY_HEADER);
     let base_cfg = base.clone();
     let results = parallel::map_ordered(&a.seeds, a.jobs, |&seed| {
@@ -280,14 +285,30 @@ pub const OUTCOMES: &[Outcome] = &[
     ("trail_tiles", |s| f64::from(last(s).trail_tiles)),
     ("road_tiles", |s| f64::from(last(s).road_tiles)),
     ("hamlets", |s| f64::from(last(s).hamlets)),
-    ("clark_evans", |s| f64::from(last(s).clark_evans)),
-    ("forage_radius", |s| f64::from(last(s).forage_radius)),
-    ("travel_per_food_run", |s| {
-        let moved: f64 = s.metrics.iter().map(|m| m.tiles_moved as f64).sum();
-        let food: f64 = s.metrics.iter().map(|m| f64::from(m.food_gathered)).sum();
-        moved / food.max(1.0)
+    // Extinction / tiny populations make these sentinels, not measurements.
+    ("clark_evans", |s| {
+        let m = last(s);
+        if m.population == 0 || m.homes_occupied < 2 {
+            f64::NAN
+        } else {
+            f64::from(m.clark_evans)
+        }
     }),
+    ("forage_radius", |s| {
+        if last(s).population == 0 {
+            f64::NAN
+        } else {
+            f64::from(last(s).forage_radius)
+        }
+    }),
+    ("travel_per_food_run", travel_per_food_run),
 ];
+
+fn travel_per_food_run(s: &Simulation) -> f64 {
+    let moved: f64 = s.metrics.iter().map(|m| m.tiles_moved as f64).sum();
+    let food: f64 = s.metrics.iter().map(|m| f64::from(m.food_gathered)).sum();
+    moved / food.max(1.0)
+}
 
 fn last(s: &Simulation) -> &accrete_core::simulation::metrics::DailyMetrics {
     s.metrics.last().expect("a finished run has metrics")
@@ -357,12 +378,19 @@ fn print_aggregate(experiments: &[&'static Experiment], results: &[SeedResult]) 
             let d: Vec<f64> = results
                 .iter()
                 .flat_map(|r| {
-                    r.pairs
-                        .iter()
-                        .filter(|p| p.0 == e.name)
-                        .map(move |p| p.2[k] - p.1[k])
+                    r.pairs.iter().filter_map(move |p| {
+                        if p.0 == e.name && p.1[k].is_finite() && p.2[k].is_finite() {
+                            Some(p.2[k] - p.1[k])
+                        } else {
+                            None
+                        }
+                    })
                 })
                 .collect();
+            if d.is_empty() {
+                println!("    {name:<26}            (no finite pairs)");
+                continue;
+            }
             let (m, _, half) = parallel::mean_sd_ci(&d);
             if half.is_finite() {
                 println!(
@@ -404,6 +432,14 @@ fn sum_home_moves(sim: &Simulation) -> u32 {
     sim.metrics.iter().map(|m| m.home_moves).sum()
 }
 
+fn outcome_cell(x: f64) -> String {
+    if x.is_finite() {
+        x.to_string()
+    } else {
+        String::new()
+    }
+}
+
 fn append_summary_row(
     s: &mut String,
     seed: u64,
@@ -417,6 +453,12 @@ fn append_summary_row(
         control.metrics.last().expect("control metrics"),
         intervention.metrics.last().expect("intervention metrics"),
     );
+    let oc = outcomes(control);
+    let oi = outcomes(intervention);
+    let by = |name: &str, side: &[f64]| {
+        let i = OUTCOMES.iter().position(|(n, _)| *n == name).expect(name);
+        outcome_cell(side[i])
+    };
     let _ = writeln!(
         s,
         "{seed},{name},{days},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
@@ -429,14 +471,14 @@ fn append_summary_row(
         mi.trail_tiles,
         mc.road_tiles,
         mi.road_tiles,
-        mc.forage_radius,
-        mi.forage_radius,
-        mc.travel_per_food,
-        mi.travel_per_food,
+        by("forage_radius", &oc),
+        by("forage_radius", &oi),
+        by("travel_per_food_run", &oc),
+        by("travel_per_food_run", &oi),
         mc.hamlets,
         mi.hamlets,
-        mc.clark_evans,
-        mi.clark_evans,
+        by("clark_evans", &oc),
+        by("clark_evans", &oi),
         mc.total_births,
         mi.total_births,
         mc.total_deaths_deprivation,

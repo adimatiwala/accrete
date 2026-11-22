@@ -123,10 +123,9 @@ pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
             // to the output folder, so a moved results folder still works.
             path: std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()),
             relative_path: crate::manifest::relative_to(opts.out, p),
-            file_hash: crate::manifest::file_hash(p).unwrap_or_else(|e| {
-                eprintln!("error: {e}");
-                std::process::exit(1)
-            }),
+            // Panic (not process::exit) so a failure under --jobs is caught
+            // by parallel::map_ordered instead of killing sibling seeds.
+            file_hash: crate::manifest::file_hash(p).unwrap_or_else(|e| panic!("{e}")),
         },
         None => crate::manifest::Start::Fresh { seed },
     };
@@ -227,10 +226,8 @@ pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
         );
     }
     if let Some(path) = opts.save {
-        sim.save_snapshot(path).unwrap_or_else(|e| {
-            eprintln!("error: {e}");
-            std::process::exit(1)
-        });
+        sim.save_snapshot(path)
+            .unwrap_or_else(|e| panic!("saving snapshot: {e}"));
         println!(
             "  snapshot (day {}) written to {}",
             sim.day(),
@@ -272,10 +269,7 @@ pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
     };
     match manifest.write(out) {
         Ok(p) => println!("  manifest written to {}", p.display()),
-        Err(e) => {
-            eprintln!("error: {e}");
-            std::process::exit(1)
-        }
+        Err(e) => panic!("{e}"),
     }
     sim
 }

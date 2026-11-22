@@ -270,6 +270,79 @@ fn sweeps_reject_jobs_zero_and_bad_points_before_running() {
 }
 
 #[test]
+fn a_different_run_cannot_overwrite_an_existing_manifest() {
+    let dir = tmp("manifestow");
+    ok(&accrete(&[
+        "run",
+        "--seed",
+        "1",
+        "--days",
+        "2",
+        "--label",
+        "run",
+        "-o",
+        s(&dir),
+    ]));
+    let m = dir.join("run_seed1_manifest.json");
+    assert!(m.is_file());
+    // Same label into the same folder for more days: a different run.
+    let o = accrete(&[
+        "run",
+        "--seed",
+        "1",
+        "--days",
+        "3",
+        "--label",
+        "run",
+        "-o",
+        s(&dir),
+    ]);
+    assert_ne!(o.status.code(), Some(0), "{o:?}");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(
+        err.contains("already records a different run") || err.contains("panic"),
+        "{err}"
+    );
+    // The original manifest still reproduces.
+    ok(&accrete(&["reproduce", s(&m)]));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn branch_rejects_a_silent_global_config() {
+    let dir = tmp("branchcfg");
+    let snap = dir.join("s.snap.json");
+    ok(&accrete(&[
+        "run",
+        "--seed",
+        "1",
+        "--days",
+        "2",
+        "--save",
+        s(&snap),
+        "-o",
+        s(&dir),
+    ]));
+    let cfg = dir.join("c.toml");
+    std::fs::write(&cfg, "resources.food_regrowth = 0.01\n").unwrap();
+    let o = accrete(&[
+        "--config",
+        s(&cfg),
+        "branch",
+        "--load",
+        s(&snap),
+        "--days",
+        "1",
+        "-o",
+        s(&dir),
+    ]);
+    assert_eq!(o.status.code(), Some(2), "{o:?}");
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert!(err.contains("--config-b"), "{err}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn a_sweep_run_reproduces_from_its_manifest() {
     let dir = tmp("sweeprepro");
     ok(&accrete(&[

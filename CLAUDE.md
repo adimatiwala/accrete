@@ -11,7 +11,7 @@ Where to look:
 - **`docs/DESIGN.md`**: a module-by-module map of `accrete-core`, plus the tick pipeline.
 - **`README.md`**: a quick start and the headline results table.
 
-**Status:** Weeks 1–4 are built: snapshots and branching, droughts and route disruptions, the random and omniscient baselines, the behavioural benchmarks, the viewer's experiment controls, and the Week 3 Day 5 emergence experiment suite (`accrete experiments`). Phase 2 tooling has started: run manifests with `accrete reproduce`, seed ranges, parallel seeds and aggregate statistics with confidence intervals (A.19). Parameter sweeps (`accrete sweep`, grid or Latin hypercube) are in A.20; a run index is next (A.10).
+**Status:** Weeks 1–4 are built, plus Phase 2 tooling: scarcity rerun (A.18), manifests/`reproduce`/seed ranges/parallel aggregates (A.19), parameter sweeps (A.20), and cross-PR review fixes (A.21). A run index is next (A.10).
 
 ## Commands
 

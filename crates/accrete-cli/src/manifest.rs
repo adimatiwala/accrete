@@ -96,7 +96,15 @@ pub fn relative_to(from: &Path, target: &Path) -> Option<PathBuf> {
     for c in &t[common..] {
         rel.push(c.as_os_str());
     }
-    Some(rel)
+    // Always store with `/`, so a Windows-written manifest still joins on
+    // macOS/Linux (a `\` in the string would be a literal character there).
+    Some(PathBuf::from(rel.to_string_lossy().replace('\\', "/")))
+}
+
+/// The final path component of `path`, splitting on both `/` and `\`.
+pub fn snapshot_file_name(path: &Path) -> PathBuf {
+    let s = path.to_string_lossy();
+    PathBuf::from(s.rsplit(['/', '\\']).next().unwrap_or(""))
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -128,6 +136,20 @@ impl Manifest {
 
     pub fn write(&self, out: &Path) -> Result<PathBuf, String> {
         let path = Self::path_for(out, &self.label, self.seed);
+        if path.is_file() {
+            if let Ok(old) = Self::read(&path) {
+                let same = old.start == self.start
+                    && old.start_tick == self.start_tick
+                    && old.ticks == self.ticks
+                    && old.config.digest() == self.config.digest();
+                if !same {
+                    return Err(format!(
+                        "{} already records a different run; use a different --label or -o",
+                        path.display()
+                    ));
+                }
+            }
+        }
         let json = serde_json::to_string_pretty(self).expect("manifest serializes");
         std::fs::write(&path, json).map_err(|e| format!("writing {}: {e}", path.display()))?;
         Ok(path)
@@ -183,10 +205,18 @@ pub fn reproduce(m: &Manifest, base_dir: &Path) -> Result<Reproduction, String> 
             // bytes match the recorded hash wins.
             let mut candidates: Vec<PathBuf> = Vec::new();
             if let Some(rel) = relative_path {
-                candidates.push(base_dir.join(rel));
+                // Join component-wise so a `/`-separated relative path from
+                // Windows still resolves on Unix (and the other way around).
+                let mut p = base_dir.to_path_buf();
+                for part in rel.to_string_lossy().split(['/', '\\']) {
+                    if !part.is_empty() {
+                        p.push(part);
+                    }
+                }
+                candidates.push(p);
             }
             candidates.push(path.clone());
-            candidates.push(base_dir.join(path.file_name().unwrap_or_default()));
+            candidates.push(base_dir.join(snapshot_file_name(path)));
             let existing: Vec<&PathBuf> = candidates.iter().filter(|c| c.is_file()).collect();
             if existing.is_empty() {
                 return Err(format!("snapshot {} not found", path.display()));

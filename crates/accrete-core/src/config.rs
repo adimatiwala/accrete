@@ -170,6 +170,9 @@ impl Config {
             ("world.height", self.world.height),
             ("movement.mp_per_tick", self.movement.mp_per_tick),
             ("movement.min_mp", self.movement.min_mp),
+            // Agents must be able to remember at least one blocked tile, or
+            // they walk into floods forever and the stuck detector never fires.
+            ("memory.disruption_slots", self.memory.disruption_slots),
         ];
         for (name, x) in at_least_one {
             if x == 0 {
@@ -1183,7 +1186,7 @@ mod tests {
         let ok = Config::default();
         assert_eq!(ok.validate(), Ok(()));
         type Breaks = fn(&mut Config);
-        let bad: [(&str, Breaks); 12] = [
+        let bad: [(&str, Breaks); 13] = [
             ("food_regrowth", |c| c.resources.food_regrowth = f32::NAN),
             ("food_regrowth", |c| {
                 c.resources.food_regrowth = f32::INFINITY
@@ -1200,6 +1203,7 @@ mod tests {
             ("maturity_days", |c| c.life.elder_days = 0.0),
             ("world.width", |c| c.world.width = 0),
             ("min_mp", |c| c.movement.min_mp = 0),
+            ("disruption_slots", |c| c.memory.disruption_slots = 0),
             ("time_cost", |c| c.decision.time_cost = f32::NAN),
         ];
         for (what, f) in bad {

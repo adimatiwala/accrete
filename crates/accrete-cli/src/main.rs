@@ -456,6 +456,9 @@ fn main() {
             label_a,
             label_b,
         } => {
+            if cli.config.is_some() {
+                fail("branch ignores --config; use --config-b for the intervention");
+            }
             branch::branch(branch::BranchArgs {
                 load,
                 days,

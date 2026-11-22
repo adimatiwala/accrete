@@ -232,11 +232,22 @@ impl Simulation {
     /// Interventions act only through the config, never on agents directly.
     ///
     /// Rejected: a different `[world]` section (the world already exists),
+    /// a change of `sim.agent_kind` (memory would be left inconsistent),
+    /// a new scripted drought/disruption whose `start_day` is already past,
     /// and a population cap below the current population.
+    ///
+    /// Active disruptions live in the saved state, not in the config: removing
+    /// a scripted entry does not end a flood that has already started.
     pub fn set_config(&mut self, config: Config) -> Result<(), String> {
         if config.world != self.config.world {
             return Err(
                 "the [world] config cannot change mid-run: the world is already generated".into(),
+            );
+        }
+        if config.sim.agent_kind != self.config.sim.agent_kind {
+            return Err(
+                "sim.agent_kind cannot change mid-run: agent memory would be left inconsistent"
+                    .into(),
             );
         }
         config.validate()?;
@@ -246,6 +257,29 @@ impl Simulation {
                 config.life.population_cap,
                 self.agents.len()
             ));
+        }
+        let day = (self.tick / crate::config::TICKS_PER_DAY) as u32;
+        for d in &config.disruption.scripted {
+            let known = self.config.disruption.scripted.iter().any(|old| old == d);
+            if !known && d.start_day < day {
+                return Err(format!(
+                    "disruption starting on day {} is already past (current day {day})",
+                    d.start_day
+                ));
+            }
+        }
+        for d in &config.weather.scripted {
+            let known = self.config.weather.scripted.iter().any(|old| old == d);
+            if !known && d.start_day < day {
+                return Err(format!(
+                    "drought starting on day {} is already past (current day {day})",
+                    d.start_day
+                ));
+            }
+        }
+        let cap = config.memory.disruption_slots as usize;
+        for a in &mut self.agents {
+            a.memory.trim_disruptions(a.pos, cap);
         }
         self.rates = TickRates::new(&config);
         self.world.rebuild_derived(&config);
@@ -424,6 +458,26 @@ mod tests {
         let mut c = sim.config.clone();
         c.life.population_cap = sim.population() as u32 - 1;
         assert!(sim.set_config(c).unwrap_err().contains("population_cap"));
+        let mut c = sim.config.clone();
+        c.sim.agent_kind = crate::config::AgentKind::Omniscient;
+        assert!(sim.set_config(c).unwrap_err().contains("agent_kind"));
+        sim.run(crate::config::TICKS_PER_DAY * 5);
+        let mut c = sim.config.clone();
+        c.disruption
+            .scripted
+            .push(crate::config::ScriptedDisruption {
+                start_day: 1,
+                days: 5,
+                kind: crate::config::DisruptionKind::Block,
+                slow_factor: 3,
+                center: [0, 0],
+                radius: 2,
+                busiest_tiles: 0,
+            });
+        assert!(
+            sim.set_config(c).unwrap_err().contains("already past"),
+            "past disruption must be refused"
+        );
         let mut c = sim.config.clone();
         c.resources.food_regrowth *= 0.5;
         assert!(sim.set_config(c).is_ok());
