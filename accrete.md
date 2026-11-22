@@ -1254,3 +1254,5 @@ The spec's "load snapshot, select drought or route disruption, branch and compar
 * **Speed:** while branched, the per-frame step budget is halved, because two simulations step per tick.
 
 **Verification:** headless screenshots after loading a day-60 snapshot of seed 1 and branching with `--intervene 1` (cut routes, viewing the intervention) and `--intervene 0` (drought, viewing the control) show the banner, the red disrupted tiles and the overlaid population line. The viewer only calls `Simulation::step`, `snapshot_json` and `set_config`, all of which are tested in core.
+
+**Rebased onto the reviewed PRs:** `set_config` now returns a `Result`, and the viewer ignored it. A rejected intervention would have shown an unchanged copy labelled as the intervention. Branching now reports the error and does not branch. CI does not lint the viewer, so the compiler warning alone would not have caught this.

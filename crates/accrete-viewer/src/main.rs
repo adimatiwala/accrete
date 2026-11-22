@@ -292,7 +292,10 @@ impl App {
         let day = self.sim.day();
         let cfg = intervention_config(&self.sim.config, self.intervention, day, self.focus());
         let mut intervention = copy;
-        intervention.set_config(cfg);
+        if let Err(e) = intervention.set_config(cfg) {
+            self.say(format!("branch failed: {e}"));
+            return;
+        }
         // Show the intervention; the control keeps running alongside.
         let control = std::mem::replace(&mut self.sim, intervention);
         self.branch = Some(Branch {
