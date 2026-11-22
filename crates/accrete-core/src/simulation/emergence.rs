@@ -113,3 +113,208 @@ pub fn mean_home_age_days(world: &World, tick: u64) -> f32 {
         ages.iter().sum::<f32>() / ages.len() as f32
     }
 }
+
+// ---------------------------------------------------------------------------
+// Observatory (A.24): inequality, settlement sizes, trade network, culture.
+// All measurement only; deterministic (fixed-order sums, `total_cmp` sorts).
+// ---------------------------------------------------------------------------
+
+/// Gini coefficient of non-negative values (0 = equal, → 1 = concentrated).
+/// Returns 0 for fewer than two values or a zero total.
+pub fn gini(values: &[f64]) -> f32 {
+    let n = values.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let mut v: Vec<f64> = values.iter().map(|x| x.max(0.0)).collect();
+    v.sort_by(f64::total_cmp);
+    let total: f64 = v.iter().sum();
+    if total <= 0.0 {
+        return 0.0;
+    }
+    let mut acc = 0.0f64;
+    for (i, x) in v.iter().enumerate() {
+        acc += (2.0 * (i as f64 + 1.0) - n as f64 - 1.0) * x;
+    }
+    (acc / (n as f64 * total)) as f32
+}
+
+/// Household wealth: goods held by residents plus the home's chests, in
+/// weight units, for every occupied home (in home-id order).
+pub fn household_wealth(
+    world: &World,
+    agents: &[Agent],
+    inv: &crate::config::InventoryConfig,
+) -> Vec<f64> {
+    let mut out = Vec::new();
+    for h in world.homes.iter().filter(|h| !h.is_vacant()) {
+        let mut w = f64::from(h.stored().weight(inv));
+        for &id in &h.residents {
+            if let Ok(i) = agents.binary_search_by_key(&id, |a| a.id) {
+                w += f64::from(agents[i].inventory.weight(inv));
+            }
+        }
+        out.push(w);
+    }
+    out
+}
+
+/// Residents per cluster of occupied homes linked within `radius` tiles
+/// (single linkage, as in settlement detection), largest first.
+pub fn cluster_sizes(world: &World, radius: i32) -> Vec<(u32, u32)> {
+    let homes: Vec<(crate::world::HomeId, crate::geom::Pos, u32)> = world
+        .homes
+        .iter()
+        .filter(|h| !h.is_vacant())
+        .map(|h| (h.id, h.pos, h.residents.len() as u32))
+        .collect();
+    let mut sizes: Vec<(u32, u32)> = crate::simulation::settlement::clusters(&homes, radius)
+        .iter()
+        .map(|g| (g.len() as u32, g.iter().map(|&i| homes[i].2).sum()))
+        .collect();
+    sizes.sort_by(|a, b| b.1.cmp(&a.1).then(b.0.cmp(&a.0)));
+    sizes
+}
+
+/// Global Moran's I of a per-agent trait over occupied homes. A home's value
+/// is its residents' mean; weights are `1 / (1 + d)` for homes within
+/// `range` tiles (Chebyshev), else 0. Returns `None` with fewer than three
+/// homes, no neighbouring pairs, or no variance.
+pub fn morans_i(
+    world: &World,
+    agents: &[Agent],
+    range: i32,
+    trait_of: impl Fn(&Agent) -> f32,
+) -> Option<f32> {
+    let mut pts: Vec<(crate::geom::Pos, f64)> = Vec::new();
+    for h in world.homes.iter().filter(|h| !h.is_vacant()) {
+        let (mut sum, mut n) = (0.0f64, 0u32);
+        for &id in &h.residents {
+            if let Ok(i) = agents.binary_search_by_key(&id, |a| a.id) {
+                sum += f64::from(trait_of(&agents[i]));
+                n += 1;
+            }
+        }
+        if n > 0 {
+            pts.push((h.pos, sum / f64::from(n)));
+        }
+    }
+    let n = pts.len();
+    if n < 3 {
+        return None;
+    }
+    let mean = pts.iter().map(|p| p.1).sum::<f64>() / n as f64;
+    let var: f64 = pts.iter().map(|p| (p.1 - mean) * (p.1 - mean)).sum();
+    if var <= 1e-12 {
+        return None;
+    }
+    let (mut num, mut wsum) = (0.0f64, 0.0f64);
+    for i in 0..n {
+        for j in 0..n {
+            if i == j {
+                continue;
+            }
+            let d = pts[i].0.chebyshev(pts[j].0);
+            if d > range {
+                continue;
+            }
+            let w = 1.0 / (1.0 + f64::from(d));
+            wsum += w;
+            num += w * (pts[i].1 - mean) * (pts[j].1 - mean);
+        }
+    }
+    if wsum <= 0.0 {
+        return None;
+    }
+    Some(((n as f64 / wsum) * (num / var)) as f32)
+}
+
+/// One completed barter, kept for network measurement only.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct TradeRecord {
+    pub tick: u64,
+    pub a: u32,
+    pub b: u32,
+    /// The two traders lived in different homes (or at least one was homeless).
+    pub cross_household: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct TradeNetwork {
+    pub trades: u32,
+    pub pairs: u32,
+    pub traders: u32,
+    pub mean_degree: f32,
+    pub degree_gini: f32,
+    pub cross_household_share: f32,
+    pub repeat_share: f32,
+}
+
+/// Network statistics over trades with `tick >= since`.
+pub fn trade_network(log: &[TradeRecord], since: u64) -> TradeNetwork {
+    use std::collections::BTreeMap;
+    let mut pairs: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+    let mut cross = 0u32;
+    let mut trades = 0u32;
+    for r in log.iter().filter(|r| r.tick >= since) {
+        let key = if r.a < r.b { (r.a, r.b) } else { (r.b, r.a) };
+        *pairs.entry(key).or_insert(0) += 1;
+        trades += 1;
+        cross += u32::from(r.cross_household);
+    }
+    if trades == 0 {
+        return TradeNetwork::default();
+    }
+    let mut degree: BTreeMap<u32, u32> = BTreeMap::new();
+    for &(a, b) in pairs.keys() {
+        *degree.entry(a).or_insert(0) += 1;
+        *degree.entry(b).or_insert(0) += 1;
+    }
+    let degrees: Vec<f64> = degree.values().map(|&d| f64::from(d)).collect();
+    let repeats: u32 = pairs.values().map(|&c| c - 1).sum();
+    TradeNetwork {
+        trades,
+        pairs: pairs.len() as u32,
+        traders: degree.len() as u32,
+        mean_degree: (degrees.iter().sum::<f64>() / degrees.len() as f64) as f32,
+        degree_gini: gini(&degrees),
+        cross_household_share: cross as f32 / trades as f32,
+        repeat_share: repeats as f32 / trades as f32,
+    }
+}
+
+#[cfg(test)]
+mod observatory_tests {
+    use super::*;
+
+    #[test]
+    fn gini_known_values() {
+        assert_eq!(gini(&[1.0, 1.0, 1.0, 1.0]), 0.0);
+        // One holder of everything among n: (n - 1) / n.
+        assert!((gini(&[0.0, 0.0, 0.0, 4.0]) - 0.75).abs() < 1e-6);
+        assert!((gini(&[1.0, 2.0, 3.0, 4.0]) - 0.25).abs() < 1e-6);
+        assert_eq!(gini(&[5.0]), 0.0);
+    }
+
+    #[test]
+    fn trade_network_counts_pairs_degrees_and_repeats() {
+        let r = |tick, a, b, cross| TradeRecord {
+            tick,
+            a,
+            b,
+            cross_household: cross,
+        };
+        let log = [
+            r(1, 1, 2, true),
+            r(2, 2, 1, true),
+            r(3, 1, 3, false),
+            r(0, 4, 5, true),
+        ];
+        let n = trade_network(&log, 1);
+        assert_eq!((n.trades, n.pairs, n.traders), (3, 2, 3));
+        assert!((n.mean_degree - 4.0 / 3.0).abs() < 1e-6);
+        assert!((n.repeat_share - 1.0 / 3.0).abs() < 1e-6);
+        assert!((n.cross_household_share - 2.0 / 3.0).abs() < 1e-6);
+        assert_eq!(trade_network(&log, 100), TradeNetwork::default());
+    }
+}

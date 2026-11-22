@@ -301,6 +301,14 @@ impl Simulation {
         let sc = self.config.social.clone();
         let slots = sc.social_slots as usize;
         let (idp, idq) = (self.agents[p].id, self.agents[q].id);
+        let (hp, hq) = (self.agents[p].home, self.agents[q].home);
+        self.trade_log
+            .push(crate::simulation::emergence::TradeRecord {
+                tick,
+                a: idp,
+                b: idq,
+                cross_household: hp.is_none() || hp != hq,
+            });
         let given = self.agents[p].inventory.take(o.give, o.give_qty);
         self.agents[q].inventory.put(o.give, given);
         let got = self.agents[q].inventory.take(o.get, o.get_qty);
