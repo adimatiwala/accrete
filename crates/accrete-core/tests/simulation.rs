@@ -349,15 +349,20 @@ fn route_disruption_blocks_busy_trails_then_restores_them() {
             .iter()
             .any(|k| matches!(k, EventKind::RouteRestored { .. }))
     );
+    // The disruption has ended in the world, but agents who saw it keep the
+    // belief until they re-see the tile.
     assert!(
         cut.agents.iter().any(|a| a
             .memory
             .disruptions
             .iter()
-            .any(|t| t.disruption == Disruption::Blocked))
-            || cut.agents.iter().all(|a| a.memory.disruptions.is_empty()),
-        "memories are consistent"
+            .any(|t| t.disruption == Disruption::Blocked)),
+        "at least one agent should still remember a blocked tile after the flood ended"
     );
+    for a in &cut.agents {
+        assert!(a.memory.disruptions.windows(2).all(|w| w[0].pos < w[1].pos));
+        assert!(a.memory.disruptions.len() <= cut.config.memory.disruption_slots as usize);
+    }
     let random = |s: &Simulation| {
         s.weather
             .history

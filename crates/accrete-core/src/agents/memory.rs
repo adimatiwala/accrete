@@ -856,6 +856,15 @@ mod tests {
             parent.learn(p);
             parent.note_resource(p, Resource::Food, 1.0 + i as f32, 0, &c, 120.0);
         }
+        // Disruptions outside the newborn known radius are still inherited.
+        parent.note_disruption(Pos::new(39, 39), Disruption::Blocked, 5, Pos::new(0, 0), 16);
+        parent.note_disruption(
+            Pos::new(1, 2),
+            Disruption::Slowed { factor: 3 },
+            6,
+            Pos::new(0, 0),
+            16,
+        );
         let child = AgentMemory::inherit_from(&parent, dims, Pos::new(10, 5), 16, 0.5, 10, 120.0);
         assert_eq!(child.resources.len(), 5);
         for r in &child.resources {
@@ -871,6 +880,11 @@ mod tests {
             let p = dims.pos(i);
             assert!(!child.knows(p) || parent.knows(p));
         }
+        assert_eq!(child.disruptions, parent.disruptions);
+        assert_eq!(
+            child.believed_disruption(Pos::new(39, 39)),
+            Disruption::Blocked
+        );
     }
 
     #[test]
@@ -920,5 +934,31 @@ mod tests {
         }
         assert!(m.disruptions.windows(2).all(|w| w[0].pos < w[1].pos));
         assert_eq!(m.believed_disruption(Pos::new(3, 0)), Disruption::Blocked);
+    }
+
+    #[test]
+    fn reseeing_a_restored_tile_clears_the_belief() {
+        let mut m = AgentMemory::new(Dims::new(8, 8));
+        let p = Pos::new(2, 2);
+        m.note_disruption(p, Disruption::Blocked, 0, Pos::new(0, 0), 8);
+        assert_eq!(m.believed_disruption(p), Disruption::Blocked);
+        m.note_disruption(p, Disruption::None, 10, Pos::new(0, 0), 8);
+        assert_eq!(m.believed_disruption(p), Disruption::None);
+        assert!(m.disruptions.is_empty());
+    }
+
+    #[test]
+    fn equal_distance_prefers_the_lower_pos() {
+        let mut m = AgentMemory::new(Dims::new(16, 16));
+        let at = Pos::new(0, 0);
+        m.note_disruption(Pos::new(3, 4), Disruption::Blocked, 0, at, 1); // dist2 = 25
+        // Same distance, higher pos: ignored when the pool is full.
+        m.note_disruption(Pos::new(4, 3), Disruption::Blocked, 1, at, 1);
+        assert_eq!(m.believed_disruption(Pos::new(3, 4)), Disruption::Blocked);
+        assert_eq!(m.believed_disruption(Pos::new(4, 3)), Disruption::None);
+        // Same distance, lower pos: replaces the higher one.
+        m.note_disruption(Pos::new(0, 5), Disruption::Blocked, 2, at, 1);
+        assert_eq!(m.believed_disruption(Pos::new(0, 5)), Disruption::Blocked);
+        assert_eq!(m.believed_disruption(Pos::new(3, 4)), Disruption::None);
     }
 }

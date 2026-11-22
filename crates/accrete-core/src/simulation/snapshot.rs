@@ -9,8 +9,10 @@
 //!
 //! **Not saved**, because they never affect results:
 //! - derived data, rebuilt on load: line-of-sight masks and the tile-to-homes
-//!   index (`World::rebuild_derived`), agents' exploration-ray caches, and the
-//!   per-tick rates (`TickRates`, recomputed from the config);
+//!   index (`World::rebuild_derived`), the per-tile disruption index
+//!   (`DisruptionState::rebuild_index` — not `rebuild_derived`), agents'
+//!   exploration-ray caches, and the per-tick rates (`TickRates`, recomputed
+//!   from the config);
 //! - debugging and inspection buffers, which start empty after a load: the
 //!   rolling event log, the graveyard of recently dead agents, the latest
 //!   decision traces and intents, and the bounded pathology log;

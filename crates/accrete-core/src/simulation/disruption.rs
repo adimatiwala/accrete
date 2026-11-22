@@ -3,9 +3,9 @@
 //! through ordinary movement costs only.
 //!
 //! Nothing here touches agents. Agents keep routing by what they believe; they
-//! learn of a disruption when the tile comes into sight (the changed-tile
-//! memory records it) or when a planned step turns out to be blocked, and
-//! re-plan from there. Restored tiles look normal again when next seen.
+//! learn of a disruption when the tile comes into sight (`AgentMemory::note_disruption`)
+//! or when a planned step turns out to be blocked, and re-plan from there.
+//! Restored tiles look normal again when next seen.
 //!
 //! Disruptions start and end in the daily phase, like droughts. The state here
 //! is authoritative (hashed and saved in snapshots); `World::disruption_at`
