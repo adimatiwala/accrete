@@ -92,9 +92,9 @@ pub struct Simulation {
     pub intents: Vec<(u32, Intent)>,
     pub weather: WeatherState,
     pub(crate) scratch: PathScratch,
-    total_births: u32,
-    total_deaths: [u32; 2],
-    lifespans: (f64, u32),
+    pub(crate) total_births: u32,
+    pub(crate) total_deaths: [u32; 2],
+    pub(crate) lifespans: (f64, u32),
 }
 
 const GRAVEYARD_CAP: usize = 500;
@@ -109,12 +109,31 @@ impl Simulation {
     /// Start a simulation on an existing world (e.g. a hand-built scenario),
     /// placing one initial agent on each of `world.spawns`.
     pub fn from_world(world: World, config: Config) -> Self {
+        let seed = world.seed;
+        let mut sim = Self::from_world_parts(world, config, Vec::new());
+        let mut founders = Rng::for_stream(seed, Stream::Founders);
+        let spawns = sim.world.spawns.clone();
+        for p in spawns {
+            let a = sim.make_founder(p, &mut founders);
+            sim.agents.push(a);
+        }
+        sim.reset_ledger();
+        for i in 0..sim.agents.len() {
+            observe(&mut sim.agents[i], &sim.world, &sim.config, &sim.rates, 0);
+        }
+        sim
+    }
+
+    /// A simulation at tick 0 with the given world and agents, fresh RNG
+    /// streams for the world's seed, and empty bookkeeping. Callers fill in
+    /// the rest (`from_world` adds founders; snapshots restore everything).
+    pub(crate) fn from_world_parts(world: World, config: Config, agents: Vec<Agent>) -> Self {
         let rates = TickRates::new(&config);
         let seed = world.seed;
-        let mut sim = Self {
+        Self {
             rates,
             tick: 0,
-            agents: Vec::new(),
+            agents,
             next_id: 0,
             rng_agents: Rng::for_stream(seed, Stream::Agents),
             rng_births: Rng::for_stream(seed, Stream::Births),
@@ -139,18 +158,7 @@ impl Simulation {
             lifespans: (0.0, 0),
             world,
             config,
-        };
-        let mut founders = Rng::for_stream(seed, Stream::Founders);
-        let spawns = sim.world.spawns.clone();
-        for p in spawns {
-            let a = sim.make_founder(p, &mut founders);
-            sim.agents.push(a);
         }
-        sim.reset_ledger();
-        for i in 0..sim.agents.len() {
-            observe(&mut sim.agents[i], &sim.world, &sim.config, &sim.rates, 0);
-        }
-        sim
     }
 
     /// Start resource accounting afresh from the current state.

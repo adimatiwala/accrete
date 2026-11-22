@@ -3,8 +3,13 @@
 //! ```text
 //! accrete world  --seed 1                       # stats, validation, hash
 //! accrete render --seed 1 --overlay biome -o results/biome.png
+//! accrete run --seed 1 --days 100 --save results/seed1_day100.snap.json
+//! accrete run --load results/seed1_day100.snap.json --days 200
+//! accrete branch --load results/seed1_day100.snap.json --days 200 \
+//!     --drought 100:200:64:64:20:0.6 --label-b drought
 //! ```
 
+mod branch;
 mod image;
 mod run;
 mod trace;
@@ -44,12 +49,19 @@ enum Cmd {
     },
     /// Run the simulation headlessly and export metrics.
     Run {
-        /// One or more seeds (comma separated).
+        /// One or more seeds (comma separated). Ignored with `--load`.
         #[arg(long, default_value = "1", value_delimiter = ',')]
         seed: Vec<String>,
-        /// Number of days to simulate.
+        /// Number of days to simulate (from the snapshot's day with `--load`).
         #[arg(long, default_value_t = 100)]
         days: u32,
+        /// Resume from a snapshot instead of generating a world. `--set` and
+        /// `--config` then change the snapshot's config (an intervention).
+        #[arg(long)]
+        load: Option<PathBuf>,
+        /// Write a snapshot of the final state to this path (one seed only).
+        #[arg(long)]
+        save: Option<PathBuf>,
         /// Output directory for metrics and images.
         #[arg(short, long, default_value = "results")]
         out: PathBuf,
@@ -72,6 +84,33 @@ enum Cmd {
         /// e.g. `--timelapse 0,75,150,225,300`.
         #[arg(long, value_delimiter = ',')]
         timelapse: Vec<u32>,
+    },
+    /// Load a snapshot and run a control and an intervention side by side.
+    Branch {
+        /// Snapshot to branch from.
+        #[arg(long)]
+        load: PathBuf,
+        /// Days to run each branch.
+        #[arg(long, default_value_t = 200)]
+        days: u32,
+        #[arg(short, long, default_value = "results")]
+        out: PathBuf,
+        #[arg(long, default_value_t = 50)]
+        every: u32,
+        /// Scripted drought for the intervention:
+        /// `DAY:DAYS:X:Y:RADIUS:SEVERITY` (repeatable).
+        #[arg(long = "drought")]
+        droughts: Vec<String>,
+        /// Config overrides for the intervention (repeatable).
+        #[arg(long = "set")]
+        sets: Vec<String>,
+        /// Whole config file for the intervention (before `--set`/`--drought`).
+        #[arg(long)]
+        config_b: Option<PathBuf>,
+        #[arg(long, default_value = "control")]
+        label_a: String,
+        #[arg(long, default_value = "intervention")]
+        label_b: String,
     },
     /// Run to a day, then trace one or more agents tick by tick.
     Trace {
@@ -144,6 +183,8 @@ fn main() {
         Cmd::Run {
             seed,
             days,
+            load,
+            save,
             out,
             every,
             snap_every,
@@ -152,23 +193,71 @@ fn main() {
             label,
             timelapse,
         } => {
-            let mut config = config;
-            for kv in &sets {
-                config = run::apply_override(&config, kv);
+            let opts = run::RunOpts {
+                days,
+                out: &out,
+                every,
+                snap_every,
+                label: &label,
+                timelapse: &timelapse,
+                save: save.as_deref(),
+            };
+            if let Some(path) = load {
+                // Start from the snapshot's own config; --config replaces it
+                // and --set adjusts it (either one makes an intervention).
+                let snap = run::load(&path, None, &label);
+                let mut c = if cli.config.is_some() {
+                    config
+                } else {
+                    snap.config.clone()
+                };
+                for kv in &sets {
+                    c = run::apply_override(&c, kv);
+                }
+                c.sim.check_invariants |= check;
+                let mut sim = snap;
+                if c != sim.config {
+                    println!("[{label}] config changed from the snapshot's (intervention)");
+                    sim.set_config(c);
+                }
+                run::drive(sim, &opts);
+            } else {
+                let mut config = config;
+                for kv in &sets {
+                    config = run::apply_override(&config, kv);
+                }
+                config.sim.check_invariants |= check;
+                if save.is_some() && seed.len() > 1 {
+                    eprintln!("error: --save needs a single seed");
+                    std::process::exit(2);
+                }
+                for s in seed {
+                    run::run(parse_seed(&s), &config, &opts);
+                }
             }
-            config.sim.check_invariants |= check;
-            for s in seed {
-                run::run(
-                    parse_seed(&s),
-                    &config,
-                    days,
-                    &out,
-                    every,
-                    snap_every,
-                    &label,
-                    &timelapse,
-                );
-            }
+        }
+        Cmd::Branch {
+            load,
+            days,
+            out,
+            every,
+            droughts,
+            sets,
+            config_b,
+            label_a,
+            label_b,
+        } => {
+            branch::branch(branch::BranchArgs {
+                load,
+                days,
+                out,
+                every,
+                config_b: config_b.as_ref().map(|p| load_config(&Some(p.clone()))),
+                sets_b: sets,
+                droughts_b: droughts,
+                label_a,
+                label_b,
+            });
         }
         Cmd::World { seed, json } => {
             for s in seed {

@@ -46,6 +46,85 @@ fn golden_state_hashes() {
     common::check_golden("state_seed1_t1000", sim.state_hash());
 }
 
+/// accrete.md Section 10: save at tick 500, resume to tick 1,000, and compare
+/// against an uninterrupted run. Going through a file on disk, the resumed
+/// state must also match the committed golden hash, which is shared by
+/// macOS and Windows.
+#[test]
+fn snapshot_at_500_resumes_to_the_golden_state_at_1000() {
+    let c = Config::default();
+    let mut sim = Simulation::new(common::PRIMARY_SEED, c);
+    sim.run(500);
+    let dir = std::env::temp_dir().join(format!("accrete-snap-test-{}", std::process::id()));
+    let path = dir.join("seed1_t500.snap.json");
+    sim.save_snapshot(&path).expect("save");
+    let mut resumed = Simulation::load_snapshot(&path).expect("load");
+    let _ = std::fs::remove_dir_all(&dir);
+    assert_eq!(resumed.tick, 500);
+    assert_eq!(resumed.state_hash(), sim.state_hash());
+    resumed.run(500);
+    sim.run(500);
+    assert_eq!(resumed.state_hash(), sim.state_hash());
+    assert_eq!(resumed.metrics, sim.metrics);
+    common::check_golden("state_seed1_t1000", resumed.state_hash());
+}
+
+/// An intervention branch changes only world conditions: both branches
+/// start from the same snapshot, keep identical random droughts (the
+/// `weather` stream is untouched by scripted droughts), and diverge only
+/// because the intervention's drought cuts regrowth.
+#[test]
+fn branches_from_one_snapshot_diverge_only_by_the_intervention() {
+    let c = Config::default();
+    let mut base = Simulation::new(common::PRIMARY_SEED, c.clone());
+    base.run(10 * TICKS_PER_DAY);
+    let snap = base.snapshot_json();
+
+    let mut control = Simulation::from_snapshot_json(&snap).expect("control");
+    let mut drought = Simulation::from_snapshot_json(&snap).expect("intervention");
+    let mut cfg = c;
+    cfg.weather
+        .scripted
+        .push(accrete_core::config::ScriptedDrought {
+            start_day: 10,
+            days: 20,
+            center: [64, 64],
+            radius: 40,
+            severity: 0.9,
+        });
+    drought.set_config(cfg);
+    control.run(15 * TICKS_PER_DAY);
+    drought.run(15 * TICKS_PER_DAY);
+
+    let random = |s: &Simulation| {
+        s.weather
+            .history
+            .iter()
+            .filter(|d| !d.scripted)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(random(&control), random(&drought), "same random droughts");
+    assert!(drought.weather.history.iter().any(|d| d.scripted));
+    assert_eq!(control.rng_weather, drought.rng_weather);
+    assert_ne!(control.state_hash(), drought.state_hash());
+    assert!(
+        drought
+            .world
+            .tiles
+            .iter()
+            .map(|t| f64::from(t.food))
+            .sum::<f64>()
+            < control
+                .world
+                .tiles
+                .iter()
+                .map(|t| f64::from(t.food))
+                .sum::<f64>(),
+        "the drought reduced standing food"
+    );
+}
+
 /// Conservation, bounds, homes and chests are checked every tick by the
 /// engine itself when `check_invariants` is on; it panics on violation.
 #[test]

@@ -33,6 +33,10 @@ cargo run --release -p accrete-viewer -- --seed 1 --play
 # strip (terrain + depletion) in results/
 cargo run --release -p accrete-cli -- run --seed 1 --days 300 --every 50 --timelapse 0,75,150,225,300
 
+# Snapshots and branching: save day 100, then compare a control and a drought to day 300
+cargo run --release -p accrete-cli -- run --seed 1 --days 100 --save results/seed1_day100.snap.json
+cargo run --release -p accrete-cli -- branch --load results/seed1_day100.snap.json --days 200 --drought 100:120:64:64:24:0.6 --label-b drought
+
 # Experiments: override any config value
 cargo run --release -p accrete-cli -- run --seed 1 --set resources.food_regrowth=0.06 --label scarce
 cargo run --release -p accrete-cli -- run --seed 1 --set infrastructure.household_weight=0 --set social.reciprocity_enabled=false --label selfish

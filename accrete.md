@@ -898,7 +898,7 @@ Paste the following into Codex once the repository is open:
 
 This appendix records what was built from this specification, in the order it was built. It also records every place where the specification left a choice open (or was found not to work as written), what was chosen, and why. The base is commit `e5a15ce` (this document and a README only). All numbers below are defaults in `configs/default.toml`, which a test keeps identical to `Config::default()`.
 
-**Status against the plan:** Week 1 complete. Week 2 complete. Week 3 complete except for the Day 5 experiment suite. Week 4: droughts (random and scripted) and the metrics export are complete. Not yet built: snapshots and branching, route disruption, the random and omniscient baselines, and the behavioural-benchmark range files.
+**Status against the plan:** Week 1 complete. Week 2 complete. Week 3 complete except for the Day 5 experiment suite. Week 4: droughts (random and scripted), the metrics export, and snapshots and branching are complete. Not yet built: route disruption, the random and omniscient baselines, and the behavioural-benchmark range files.
 
 ### A.1 Repository and tooling
 
@@ -1064,7 +1064,6 @@ These point to the next experiments: longer trips (more scarcity), and goods tha
 ### A.10 Not yet implemented, and suggested next steps
 
 * **Week 4 items:**
-  * Snapshots and branching: `serde` derives are already on most state, and the RNGs serialise.
   * Route disruption.
   * The random and omniscient baselines (`AgentKind` is stubbed).
   * Behavioural-benchmark range files.
@@ -1132,3 +1131,19 @@ This entry also covers the CLAUDE.md change that was merged before this changelo
 * The classifier was run on five real commits from this repository's history (spec-only and docs-only commits skip Rust; the simulation commits run everything).
 * `.github/scripts/test-ci-changes.sh` covers 16 cases in a throwaway repository and runs in CI before every classification: each category, renames, cross-category moves, deletions, non-ASCII names with spaces, an empty diff, and a missing or unknown base. Run against the first version of the classifier, it fails 5 of them.
 * The first live CI run of the `changes` job passed.
+### A.13 Snapshots and branching (Week 4 Days 1 and 3)
+
+| Decision | Rationale |
+|---|---|
+| **Format: versioned JSON** (`*.snap.json`, `SNAPSHOT_FORMAT = 1`) | `serde_json` is already a dependency and is built with `float_roundtrip`, so every float reloads to the same bits on both platforms. A binary format would be smaller (a day-100 snapshot of seed 1 with about 280 agents is 8 MB), but would add a dependency; it can replace JSON later behind the version number. |
+| **What is saved** | Everything that affects later ticks or the exported metrics: tick, config, world, agents with their memories, all four RNG streams, weather, ledger, settlement tracking, the day's counters, daily metrics, death records, pathology counts and the run totals. |
+| **What is not saved** | Derived data, rebuilt on load: line-of-sight masks, the tile-to-homes index, exploration-ray caches, and per-tick rates. Inspection buffers, which start empty: the event log, the graveyard, decision traces and intents, and the pathology log. Pathfinding scratch. None of these affects results. |
+| **Integrity check** | Each snapshot stores the state hash at save time. Loading recomputes it and rejects a mismatch, so an edited, truncated or incompatible file fails loudly instead of diverging. |
+| **Interventions through the config only** | `Simulation::set_config` swaps the configuration of a resumed run and rebuilds rates and derived data. A drought branch adds a `[[weather.scripted]]` entry. Scripted droughts never draw from the `weather` stream, so both branches keep identical random droughts (tested). |
+| **CLI** | `run --save` and `run --load`, and `branch`, which loads one snapshot twice, runs both branches for the same number of days, and writes a per-day comparison CSV (control, intervention, and the difference for population, births, deaths, food, homes, settlements, clustering, foraging radius, trades and drought area). |
+
+**Verification:**
+* Saving at tick 500 and resuming to tick 1,000 reaches the committed golden hash.
+* A saved and reloaded snapshot re-serializes byte-identically.
+* A straight 300-day run of seed 1 and a run saved at day 100 and resumed both end on hash `04841f5e6f62a0cf`.
+* In a first branch on seed 1, a drought from day 100 for 120 days (radius 24, severity 0.6) ended at day 300 with 483 people against 513 in the control, 2 hamlets against 3, and slightly longer foraging trips. That is one seed and one intervention, not yet a finding.

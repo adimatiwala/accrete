@@ -12,38 +12,79 @@ use accrete_viz::{Overlay, goal_color};
 
 use crate::image::Canvas;
 
-#[allow(clippy::too_many_arguments)] // a flat CLI entry point
-pub fn run(
-    seed: u64,
-    config: &Config,
-    days: u32,
-    out: &Path,
-    every: u32,
-    snap_every: u32,
-    label: &str,
-    timelapse: &[u32],
-) {
-    std::fs::create_dir_all(out).expect("create output dir");
+/// Options shared by `run` and `branch`.
+pub struct RunOpts<'a> {
+    /// Days to simulate from the starting state.
+    pub days: u32,
+    pub out: &'a Path,
+    pub every: u32,
+    pub snap_every: u32,
+    pub label: &'a str,
+    /// Absolute days to capture for the timelapse strip.
+    pub timelapse: &'a [u32],
+    /// Write a snapshot of the final state here.
+    pub save: Option<&'a Path>,
+}
+
+/// `accrete run` from a fresh world.
+pub fn run(seed: u64, config: &Config, opts: &RunOpts) -> Simulation {
+    std::fs::create_dir_all(opts.out).expect("create output dir");
     let t0 = Instant::now();
-    let mut sim = Simulation::new(seed, config.clone());
+    let sim = Simulation::new(seed, config.clone());
     let gen_ms = t0.elapsed().as_secs_f64() * 1000.0;
     println!(
-        "[{label}] seed {seed}: world {} generated in {gen_ms:.0} ms, {} agents",
+        "[{}] seed {seed}: world {} generated in {gen_ms:.0} ms, {} agents",
+        opts.label,
         hash::hex(sim.world.state_hash()),
         sim.population()
     );
+    drive(sim, opts)
+}
+
+/// Load a snapshot, optionally replacing its config (an intervention), and
+/// print where it resumes.
+pub fn load(path: &Path, config: Option<Config>, label: &str) -> Simulation {
+    let mut sim = Simulation::load_snapshot(path).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1)
+    });
+    println!(
+        "[{label}] loaded {} (seed {}): day {}, tick {}, {} agents, hash {}",
+        path.display(),
+        sim.world.seed,
+        sim.day(),
+        sim.tick,
+        sim.population(),
+        hash::hex(sim.state_hash())
+    );
+    if let Some(c) = config {
+        if c != sim.config {
+            println!("[{label}] config changed from the snapshot's (intervention)");
+            sim.set_config(c);
+        }
+    }
+    sim
+}
+
+/// Simulate `opts.days` days from the current state, print progress, and
+/// export metrics, deaths, maps, and optionally a snapshot.
+pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
+    std::fs::create_dir_all(opts.out).expect("create output dir");
+    let (label, seed, timelapse, out) = (opts.label, sim.world.seed, opts.timelapse, opts.out);
     let t1 = Instant::now();
+    let tick0 = sim.tick;
     let mut frames: Vec<(Canvas, Canvas)> = Vec::new();
-    if timelapse.contains(&0) {
+    if timelapse.contains(&sim.day()) {
         frames.push((
             frame(&sim, Overlay::Biome, 3),
             frame(&sim, Overlay::Depletion, 3),
         ));
     }
-    for d in 1..=days {
+    for _ in 0..opts.days {
         sim.run(TICKS_PER_DAY);
+        let d = sim.day();
         let m = sim.metrics.last().expect("daily metrics").clone();
-        if every > 0 && d % every == 0 {
+        if opts.every > 0 && d % opts.every == 0 {
             print_line(&m);
         }
         if timelapse.contains(&d) {
@@ -52,8 +93,8 @@ pub fn run(
                 frame(&sim, Overlay::Depletion, 3),
             ));
         }
-        if snap_every > 0 && d % snap_every == 0 {
-            snapshot(&sim, out, &format!("{label}_seed{seed}_day{d:03}"));
+        if opts.snap_every > 0 && d % opts.snap_every == 0 {
+            snapshot(&sim, opts.out, &format!("{label}_seed{seed}_day{d:03}"));
         }
         if sim.population() == 0 {
             println!("  population extinct on day {d}");
@@ -61,7 +102,7 @@ pub fn run(
         }
     }
     let secs = t1.elapsed().as_secs_f64();
-    let ticks = sim.tick;
+    let ticks = sim.tick - tick0;
     println!(
         "  ran {ticks} ticks in {secs:.2} s ({:.0} ticks/s), final hash {}",
         ticks as f64 / secs.max(1e-9),
@@ -118,6 +159,18 @@ pub fn run(
             p2.display()
         );
     }
+    if let Some(path) = opts.save {
+        sim.save_snapshot(path).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1)
+        });
+        println!(
+            "  snapshot (day {}) written to {}",
+            sim.day(),
+            path.display()
+        );
+    }
+    sim
 }
 
 fn print_line(m: &DailyMetrics) {

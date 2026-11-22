@@ -11,7 +11,7 @@ Where to look:
 - **`docs/DESIGN.md`**: a module-by-module map of `accrete-core`, plus the tick pipeline.
 - **`README.md`**: a quick start and the headline results table.
 
-**Status:** Weeks 1–3 and most of Week 4 are built. Snapshots and branching, route disruption, the random and omniscient baselines, and the behavioural-benchmark range files are **not built yet** (Appendix A, "Status against the plan" and A.10).
+**Status:** Weeks 1–3 and most of Week 4 are built, including snapshots and branching. Route disruption, the random and omniscient baselines, and the behavioural-benchmark range files are **not built yet** (Appendix A, "Status against the plan" and A.10).
 
 ## Commands
 
@@ -54,9 +54,14 @@ cargo run --release -p accrete-cli -- run --seed 1,2,3 --days 300 --every 50 -o 
 cargo run --release -p accrete-cli -- run --seed 1 --set infrastructure.household_weight=0 --label selfish
 cargo run --release -p accrete-cli -- trace --seed 1 --day 120 --ticks 24 --agent 42 --options
 cargo run --release -p accrete-cli -- world --seed 1,2,3          # world stats, validation, hash
+cargo run --release -p accrete-cli -- run --seed 1 --days 100 --save results/seed1_day100.snap.json
+cargo run --release -p accrete-cli -- run --load results/seed1_day100.snap.json --days 200
+cargo run --release -p accrete-cli -- branch --load results/seed1_day100.snap.json --days 200 \
+    --drought 100:120:64:64:24:0.6 --label-b drought      # control vs intervention, compared per day
 ```
 
-- **`accrete` subcommands:** `world`, `run`, `trace`, `diag`, `config` and `render`.
+- **`accrete` subcommands:** `world`, `run`, `branch`, `trace`, `diag`, `config` and `render`.
+- **Snapshots:** `run --save` writes the final state as `*.snap.json` (gitignored); `run --load` resumes it, and `--set` or `--config` with `--load` turn the resumed run into an intervention. `branch` loads one snapshot twice, runs a control and an intervention (`--drought DAY:DAYS:X:Y:RADIUS:SEVERITY`, `--set`, `--config-b`), and writes a per-day `*_compare.csv`.
 - **`--set section.key=value`** overrides any config value (repeatable).
 - **`--check`** runs the conservation and bounds checks every tick. It's slow but catches ledger bugs.
 - **Viewer flags:** `--seed`, `--day`, `--play`, `--select <agent>`, `--config <file>`, and `--screenshot <png>` for headless verification.
@@ -129,6 +134,7 @@ Cross-cutting ideas that take several files to see:
 - **Debug vs release:** prefer `--release` for tests. The debug simulation tests are slow (~4 min), but CI runs them because both builds must produce the same hashes.
 - **Viewer lint:** clippy in CI skips `accrete-viewer`, since macroquad rendering may use any float math. That's safe because rendering never feeds back into the simulation. The CLI's image renderer has the only explicit clippy `allow` in the code.
 - **Pinned dependency:** `fontdue` is pinned to 0.9.3 in `Cargo.lock` because 0.9.5 needs rustc 1.87. Edition 2024 with `rust-version = 1.86` keeps the resolver within the pinned toolchain.
+- **Snapshots must stay complete.** `simulation/snapshot.rs` lists every saved field. A new piece of state that affects later ticks or the metrics must be added to `Snapshot` (and to `stable_hash`), and `SNAPSHOT_FORMAT` bumped when the layout changes. Loading recomputes the state hash and rejects a mismatch, and the test `snapshot_at_500_resumes_to_the_golden_state_at_1000` catches anything left out.
 - **Derived world data is not serialized.** The line-of-sight masks and the tile-to-homes index are rebuilt by `World::rebuild_derived`. Any new derived structure must be rebuilt there too, or it will be missing in scenario worlds and after loading a snapshot.
 - **Memory pools:** the 64 resource-memory slots are split by type (food 40, wood 16, stone 8). One shared pool let abundant wood push out every food memory, and agents starved next to food.
 

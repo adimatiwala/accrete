@@ -20,6 +20,7 @@ This file is a map of where things are.
 | `simulation/social.rs` | Knowledge sharing and barter with reciprocity. |
 | `simulation/infrastructure.rs` | Road and shelter construction, and road upkeep. |
 | `simulation/weather.rs` | Random and scripted droughts, and optional seasons. |
+| `simulation/snapshot.rs` | Save and load the full state as versioned JSON, with a state-hash check on load; `set_config` for intervention branches. |
 | `simulation/settlement.rs`, `emergence.rs`, `metrics.rs`, `events.rs` | Measurement only (agents never read these): settlements, clustering, depletion, specialisation, the daily metrics row, the event log, the resource ledger. |
 | `scenario.rs` | Loader for the hand-built TOML worlds in `tests/scenarios/`. |
 
