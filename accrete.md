@@ -1672,3 +1672,22 @@ The binding constraint is finding a counterparty: barter happens only between co
 All four effects survive Holm correction. Population, Gini, trades and clustering R are unchanged (all CIs span 0). The same learning rule is inert in the foraging economy (A.27) and creates trait geography in the production economy, which is consistent with cultural-evolution theory: payoff-biased transmission needs payoffs that covary with behaviour. The A.27 hamlet effect did **not** replicate under tools (−0.7 [−1.7, +0.2]) and is withdrawn.
 
 **Paper.** `docs/paper/accrete.tex` (compiled to `accrete.pdf` with Tectonic: `tectonic -X compile docs/paper/accrete.tex`) is a working paper. It gives the full mathematical model (needs, utility, regrowth, barter, price learning, culture, pipeline), the reproducibility guarantees, the measurement definitions (Clark–Evans, Moran's I, Gini, specialisation), the statistical protocol (paired t, Saltelli/Jansen estimators, bootstrap, noise share, Holm), the results of E1, E2, E2b and E5 with figures, the limitations and the next experiments.
+
+### A.30 Viewer 3D diorama view
+
+`M` (or `--3d`) switches the viewer's map to a 3D scene, in `crates/accrete-viewer/src/view3d.rs`. It is presentation only: it reads the world and agents and never changes them, and core is untouched.
+
+| Piece | How |
+|---|---|
+| **Terrain** | A low-poly heightfield: one quad per tile in the active overlay's colour. Corners are shared, so the land is continuous. Height is a power curve of elevation above sea level (rivers carved slightly); the sea floor goes from sand to deep. Snow tints high peaks in the biome overlay. |
+| **Lighting** | Macroquad has no lighting, so sun and sky shading is baked into vertex colours per face. |
+| **Diorama** | Earth walls down to a base, a translucent sea sheet, and glass walls where the sea meets the edge. |
+| **Life** | Forest cones (one or two tiers) whose number follows the standing wood, so clearing is visible; boulders on stone. Houses are walls plus a pyramid roof (grey when vacant, a gold chest when there is storage), scaled by shelter level. People are role-coloured figures (elders white-haired, children smaller, tool holders carrying a tool), interpolated between ticks. |
+| **Story in 3D** | Trade arcs, birth, death and home rings, settlement and drought rings on the ground, floating settlement names, and a beacon over the selected person. The ticker, legend and inspector stay as 2D overlays. |
+| **Camera** | Orbit with right-drag or `Q`/`E`, zoom with the wheel, pan with WASD; `O` auto-orbits, `F` follows the selected person, `C` resets. Clicking picks the nearest projected person. |
+
+**Decisions:**
+* **Chunked meshes.** Meshes are split at 60k vertices / 90k indices (u16 indices). `window_conf` now returns `macroquad::conf::Conf` with a draw-call buffer of that size, and 4× MSAA.
+* **Rebuild timing.** The static scene is rebuilt whenever the map texture refreshes (daily, or on an overlay change), so overlays and deforestation show in 3D.
+
+**Verified:** `--screenshot` of seed 2 at day 150 in 3D; viewer tests pass.
