@@ -119,8 +119,7 @@ Cross-cutting ideas that take several files to see:
 4. **`configs/default.toml` must equal `Config::default()`.** The test `default_toml_matches_defaults` enforces this. Every config section uses `deny_unknown_fields`. After adding or changing a config field, regenerate the file with `cargo run -q --release -p accrete-cli -- config > configs/default.toml`.
 5. **Define motives, never outcomes** (`accrete.md` §1). Every rule must be expressible as one agent's preference, perception or ability, using that agent's local knowledge. Never add logic that reads settlements, the road network, population-wide statistics or the metrics, or that triggers on a collective result such as "form a village at N agents". A behaviour that fails to emerge is a valid result: report it, don't force it.
 6. **Conserve resources.** Every change to food, wood or stone is recorded in the `Ledger` as gathered, regrown, eaten, transferred, spoiled or used in construction. Inventories, chests and piles respect their capacity limits, and a dying agent's goods go to its home or tile. `check_invariants` / `--check` verify all of this.
-7. **Document behaviour changes.**
-   - Spec deviations and design decisions go into `accrete.md` Appendix A.
+7. **Every PR updates the changelog in `accrete.md` Appendix A.** This applies to all PRs, including tooling, CI and docs, not only simulation changes. Add a new `A.N` section, numbered in merge order, saying what changed, the decisions and why, and how it was verified. Also update the "Status against the plan" line when the status changes. Spec deviations and design decisions go there too.
    - When defaults or mechanics change results, re-run `accrete run --seed 1,2,3 --days 300` and update the results tables in README and Appendix A.9.
 
 ## Gotchas
@@ -144,7 +143,7 @@ Cross-cutting ideas that take several files to see:
 | `rng::Stream` ids, hashing, golden-file workflow, or banned methods in `clippy.toml` | **Rules** 1–3 |
 | Config layout, units, `TickRates`, or how `default.toml` is generated | **Architecture** (units), **Rule** 4 |
 | The scenario format or test layout | **Architecture** (scenarios), **Commands** |
-| What is built or missing (`accrete.md` Appendix A status) | **What this is** (status) |
+| What is built or missing (`accrete.md` Appendix A status) | **What this is** (status), and the Appendix A changelog entry for the PR |
 | A new non-obvious pitfall you hit | **Gotchas** |
 
 Keep entries short and factual, and remove anything that is no longer true rather than adding caveats. A project Stop hook (`.claude/hooks/claude-md-reminder.sh`, registered in `.claude/settings.json`) reminds you once per set of changes when files covered by the table changed on the branch but this file didn't. If the reminder fires and nothing here is affected, say so and carry on.

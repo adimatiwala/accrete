@@ -1089,3 +1089,31 @@ Seven issues from code review were fixed. Four of them change behaviour, so the 
 | **Trade-terms docs** | Comment and A.5 said distrust changes terms by up to 40 %. | Both say 50 %, matching the code (`1 + 0.5 × trust`). Leftover placeholder lines removed. |
 
 Two unit tests in `simulation/engine.rs` cover both outcomes of the join fallback.
+
+### A.12 Repository tooling: CLAUDE.md and CI path filtering
+
+This entry also covers the CLAUDE.md change that was merged before this changelog rule existed.
+
+**CLAUDE.md and the reminder hook (merged as PR 3).**
+* `CLAUDE.md` gives Claude Code sessions the commands (including single tests and the exact CI clippy line), the crate architecture and tick pipeline, the belief-versus-truth rules for decisions, and the invariants that keep results bit-identical. Those cover banned float methods, RNG streams, state hashing, re-recording golden hashes, keeping `default.toml` in sync, "motives, never outcomes", and the resource ledger.
+* A table maps each kind of code change to the CLAUDE.md section it affects. A project Stop hook (`.claude/hooks/claude-md-reminder.sh`) asks Claude once per new set of changes to review CLAUDE.md, when documented files changed on the branch but CLAUDE.md did not.
+* A PR template turns the same checks into a checklist.
+
+**CI path filtering (PR 4).**
+
+| Change | Rust job | Debug core tests | Viewer build |
+|---|---|---|---|
+| Docs only (`*.md`, `docs/`, `.claude/`, PR template, `.gitignore`) | skipped | – | – |
+| `accrete-cli` only | runs | skipped | skipped |
+| `accrete-viz` or `accrete-viewer` only | runs | skipped | runs |
+| Core, `configs/`, `tests/`, toolchain, dependencies, `.gitattributes`, `.github/`, or any unrecognised path | runs | runs | runs |
+
+* **Classification:** `.github/scripts/ci-changes.sh` classifies the diff. Unknown paths deliberately run everything, so a new kind of file cannot skip CI.
+* **Front-end-only changes skip the debug pass,** because front ends cannot change simulation results, and the debug pass exists to check that debug builds match the golden hashes.
+* **`ci-result` always reports** and treats a skipped Rust job as a pass, so it is the single check to require in branch protection.
+* **Triggers:** pull requests, pushes to `main`, and manual runs. Branches with an open PR were previously built twice, once for the push and once for the PR. A newer push to a PR now cancels its older run; pushes to `main` are never cancelled.
+* **Changelog rule:** every PR, including tooling, CI and docs PRs, now adds an Appendix A section like this one. This is recorded in CLAUDE.md and the PR template.
+
+**Verification:**
+* The classifier was run on five real commits from this repository's history (spec-only and docs-only commits skip Rust; the simulation commits run everything) and on eight synthetic changes covering each category, plus a missing or unknown base. All were classified as intended.
+* The first live CI run of the `changes` job passed.
