@@ -18,6 +18,7 @@ use std::path::PathBuf;
 use accrete_core::{Config, Simulation};
 
 use crate::branch;
+use crate::parallel;
 use crate::run::{self, RunOpts};
 
 /// One ablation in the suite.
@@ -90,6 +91,9 @@ pub struct ExperimentsArgs {
     pub check: bool,
     /// Subset of experiment names; empty means all.
     pub only: Vec<String>,
+    /// Seeds run in parallel (each seed's runs stay sequential). Outputs are
+    /// identical whatever the value.
+    pub jobs: usize,
 }
 
 /// Resolve `--only` names to experiments, or all of them. Duplicates are dropped.
@@ -167,75 +171,209 @@ pub fn run_suite(base: &Config, a: ExperimentsArgs) {
         println!("  • {}: {}", e.name, e.description);
     }
 
-    // `trades_*` columns are totals over the run; other metrics are final-day.
+    // `trades_*` and `total_*` columns are run totals; others are final-day.
     let mut summary = String::from(SUMMARY_HEADER);
-
-    for &seed in &a.seeds {
-        let control = run::run(
-            seed,
-            &control_cfg,
-            &RunOpts {
-                days: a.days,
-                out: &a.out,
-                every: a.every,
-                snap_every: 0,
-                label: "control",
-                timelapse: &[],
-                save: None,
-                stop_on_extinction: false,
-            },
-        );
-        for e in &experiments {
-            let mut cfg = base.clone();
-            (e.apply)(&mut cfg);
-            cfg.sim.check_invariants |= a.check;
-            let intervention = run::run(
-                seed,
-                &cfg,
-                &RunOpts {
-                    days: a.days,
-                    out: &a.out,
-                    every: a.every,
-                    snap_every: 0,
-                    label: e.label,
-                    timelapse: &[],
-                    save: None,
-                    stop_on_extinction: false,
-                },
-            );
-            let path = a
-                .out
-                .join(format!("control_vs_{}_seed{seed}_compare.csv", e.label));
-            std::fs::write(
-                &path,
-                branch::compare_csv(&control, &intervention, 0, "control", e.label),
-            )
-            .expect("write comparison");
-            branch::print_comparison(&control, &intervention, "control", e.label);
-            println!("  comparison written to {}", path.display());
-
-            let diverged = control.state_hash() != intervention.state_hash();
-            if !diverged {
-                eprintln!(
-                    "warning: experiment {} seed {seed} did not diverge after {} days",
-                    e.name, a.days
-                );
-            }
-            append_summary_row(
-                &mut summary,
-                seed,
-                e.name,
-                a.days,
-                &control,
-                &intervention,
-                diverged,
-            );
+    let base_cfg = base.clone();
+    let results = parallel::map_ordered(&a.seeds, a.jobs, |&seed| {
+        run_seed(seed, &experiments, &control_cfg, &base_cfg, &a)
+    });
+    for r in &results {
+        for row in &r.rows {
+            summary.push_str(row);
         }
     }
-
     let summary_path = a.out.join("emergence_summary.csv");
     std::fs::write(&summary_path, summary).expect("write summary");
     println!("  summary written to {}", summary_path.display());
+
+    let aggregate = aggregate_csv(&experiments, &results);
+    let aggregate_path = a.out.join("emergence_aggregate.csv");
+    std::fs::write(&aggregate_path, &aggregate).expect("write aggregate");
+    print_aggregate(&experiments, &results);
+    println!("  aggregate written to {}", aggregate_path.display());
+}
+
+/// What one seed produced: its summary rows and, per experiment, the
+/// outcome values of the control and the intervention.
+pub struct SeedResult {
+    pub rows: Vec<String>,
+    /// (experiment name, control outcomes, intervention outcomes)
+    pub pairs: Vec<(&'static str, Vec<f64>, Vec<f64>)>,
+}
+
+fn run_seed(
+    seed: u64,
+    experiments: &[&'static Experiment],
+    control_cfg: &Config,
+    base: &Config,
+    a: &ExperimentsArgs,
+) -> SeedResult {
+    let opts = |label: &'static str| RunOpts {
+        days: a.days,
+        out: &a.out,
+        every: a.every,
+        snap_every: 0,
+        label,
+        timelapse: &[],
+        save: None,
+        stop_on_extinction: false,
+        loaded_from: None,
+    };
+    let control = run::run(seed, control_cfg, &opts("control"));
+    let mut out = SeedResult {
+        rows: Vec::new(),
+        pairs: Vec::new(),
+    };
+    for e in experiments {
+        let mut cfg = base.clone();
+        (e.apply)(&mut cfg);
+        cfg.sim.check_invariants |= a.check;
+        let intervention = run::run(seed, &cfg, &opts(e.label));
+        let path = a
+            .out
+            .join(format!("control_vs_{}_seed{seed}_compare.csv", e.label));
+        std::fs::write(
+            &path,
+            branch::compare_csv(&control, &intervention, 0, "control", e.label),
+        )
+        .expect("write comparison");
+        if a.jobs <= 1 {
+            branch::print_comparison(&control, &intervention, "control", e.label);
+        }
+        println!("  [seed {seed}] comparison written to {}", path.display());
+        let diverged = control.state_hash() != intervention.state_hash();
+        if !diverged {
+            eprintln!(
+                "warning: experiment {} seed {seed} did not diverge after {} days",
+                e.name, a.days
+            );
+        }
+        let mut row = String::new();
+        append_summary_row(
+            &mut row,
+            seed,
+            e.name,
+            a.days,
+            &control,
+            &intervention,
+            diverged,
+        );
+        out.rows.push(row);
+        out.pairs
+            .push((e.name, outcomes(&control), outcomes(&intervention)));
+    }
+    out
+}
+
+/// Outcomes compared across seeds, as (name, value of a finished run).
+type Outcome = (&'static str, fn(&Simulation) -> f64);
+
+pub const OUTCOMES: &[Outcome] = &[
+    ("population", |s| f64::from(last(s).population)),
+    ("total_births", |s| f64::from(last(s).total_births)),
+    ("births_per_adult_day", births_per_adult_day),
+    ("total_deaths_deprivation", |s| {
+        f64::from(last(s).total_deaths_deprivation)
+    }),
+    ("total_home_moves", |s| f64::from(sum_home_moves(s))),
+    ("trades", |s| f64::from(sum_trades(s))),
+    ("trail_tiles", |s| f64::from(last(s).trail_tiles)),
+    ("road_tiles", |s| f64::from(last(s).road_tiles)),
+    ("hamlets", |s| f64::from(last(s).hamlets)),
+    ("clark_evans", |s| f64::from(last(s).clark_evans)),
+    ("forage_radius", |s| f64::from(last(s).forage_radius)),
+    ("travel_per_food_run", |s| {
+        let moved: f64 = s.metrics.iter().map(|m| m.tiles_moved as f64).sum();
+        let food: f64 = s.metrics.iter().map(|m| f64::from(m.food_gathered)).sum();
+        moved / food.max(1.0)
+    }),
+];
+
+fn last(s: &Simulation) -> &accrete_core::simulation::metrics::DailyMetrics {
+    s.metrics.last().expect("a finished run has metrics")
+}
+
+fn outcomes(s: &Simulation) -> Vec<f64> {
+    OUTCOMES.iter().map(|(_, f)| f(s)).collect()
+}
+
+pub const AGGREGATE_HEADER: &str = "experiment,outcome,n_seeds,control_mean,intervention_mean,\
+     diff_mean,diff_sd,diff_ci95_low,diff_ci95_high,seeds_intervention_higher,seeds_intervention_lower\n";
+
+/// Per experiment and outcome, across seeds: the mean control and
+/// intervention values, and the mean *paired* difference (intervention minus
+/// control, same seed) with its 95 % confidence interval. Empty cells where a
+/// statistic is undefined (e.g. one seed).
+pub fn aggregate_csv(experiments: &[&'static Experiment], results: &[SeedResult]) -> String {
+    let mut s = String::from(AGGREGATE_HEADER);
+    let cell = |x: f64| {
+        if x.is_finite() {
+            x.to_string()
+        } else {
+            String::new()
+        }
+    };
+    for e in experiments {
+        for (k, (name, _)) in OUTCOMES.iter().enumerate() {
+            let (mut c, mut i, mut d) = (Vec::new(), Vec::new(), Vec::new());
+            for r in results {
+                for (exp, cv, iv) in &r.pairs {
+                    if *exp == e.name {
+                        c.push(cv[k]);
+                        i.push(iv[k]);
+                        d.push(iv[k] - cv[k]);
+                    }
+                }
+            }
+            let (cm, _, _) = parallel::mean_sd_ci(&c);
+            let (im, _, _) = parallel::mean_sd_ci(&i);
+            let (dm, dsd, half) = parallel::mean_sd_ci(&d);
+            let higher = d.iter().filter(|x| **x > 0.0).count();
+            let lower = d.iter().filter(|x| **x < 0.0).count();
+            let _ = writeln!(
+                s,
+                "{},{name},{},{},{},{},{},{},{},{higher},{lower}",
+                e.name,
+                d.len(),
+                cell(cm),
+                cell(im),
+                cell(dm),
+                cell(dsd),
+                cell(dm - half),
+                cell(dm + half),
+            );
+        }
+    }
+    s
+}
+
+fn print_aggregate(experiments: &[&'static Experiment], results: &[SeedResult]) {
+    let n = results.len();
+    println!("  across {n} seed(s): mean paired difference (intervention - control), 95% CI");
+    for e in experiments {
+        println!("  {}:", e.name);
+        for (k, (name, _)) in OUTCOMES.iter().enumerate() {
+            let d: Vec<f64> = results
+                .iter()
+                .flat_map(|r| {
+                    r.pairs
+                        .iter()
+                        .filter(|p| p.0 == e.name)
+                        .map(move |p| p.2[k] - p.1[k])
+                })
+                .collect();
+            let (m, _, half) = parallel::mean_sd_ci(&d);
+            if half.is_finite() {
+                println!(
+                    "    {name:<26} {m:>+12.4}  [{:+.4}, {:+.4}]",
+                    m - half,
+                    m + half
+                );
+            } else {
+                println!("    {name:<26} {m:>+12.4}");
+            }
+        }
+    }
 }
 
 fn sum_trades(sim: &Simulation) -> u32 {
@@ -386,6 +524,7 @@ mod tests {
                 timelapse: &[],
                 save: None,
                 stop_on_extinction: false,
+                loaded_from: None,
             },
         );
         let intervention = run::run(
@@ -400,6 +539,7 @@ mod tests {
                 timelapse: &[],
                 save: None,
                 stop_on_extinction: false,
+                loaded_from: None,
             },
         );
         (control, intervention)
@@ -518,6 +658,7 @@ mod tests {
                 every: 0,
                 check: false,
                 only: vec!["scarcity20".into()],
+                jobs: 1,
             },
         );
         let read = |name: &str| std::fs::read_to_string(out.join(name)).expect(name);
@@ -565,5 +706,82 @@ mod tests {
         }
         assert!(out.join("control_vs_food-x0.2_seed1_compare.csv").exists());
         let _ = std::fs::remove_dir_all(&out);
+    }
+
+    /// Seeds in parallel give byte-identical outputs to seeds in sequence.
+    #[test]
+    fn parallel_seeds_produce_identical_outputs() {
+        let run_with = |jobs: usize| {
+            let out = tmp();
+            run_suite(
+                &Config::default(),
+                ExperimentsArgs {
+                    seeds: vec![1, 2, 3],
+                    days: 3,
+                    out: out.clone(),
+                    every: 0,
+                    check: false,
+                    only: vec!["trade".into()],
+                    jobs,
+                },
+            );
+            let read = |f: &str| std::fs::read(out.join(f)).unwrap();
+            let files = (
+                read("emergence_summary.csv"),
+                read("emergence_aggregate.csv"),
+                read("control_seed2_metrics.csv"),
+            );
+            let _ = std::fs::remove_dir_all(&out);
+            files
+        };
+        assert_eq!(run_with(1), run_with(3));
+    }
+
+    #[test]
+    fn aggregate_pairs_differences_by_seed() {
+        let trade = EXPERIMENTS.iter().find(|e| e.name == "trade").unwrap();
+        let n = OUTCOMES.len();
+        let pair = |c: f64, i: f64| ("trade", vec![c; n], vec![i; n]);
+        let results = vec![
+            SeedResult {
+                rows: vec![],
+                pairs: vec![pair(10.0, 12.0)],
+            },
+            SeedResult {
+                rows: vec![],
+                pairs: vec![pair(20.0, 21.0)],
+            },
+            SeedResult {
+                rows: vec![],
+                pairs: vec![pair(30.0, 33.0)],
+            },
+        ];
+        let csv = aggregate_csv(&[trade], &results);
+        let mut lines = csv.lines();
+        let header: Vec<&str> = lines.next().unwrap().split(',').collect();
+        let row: Vec<&str> = lines.next().unwrap().split(',').collect();
+        assert_eq!(csv.lines().count(), 1 + n, "one row per outcome");
+        let col = |name: &str| row[header.iter().position(|h| *h == name).unwrap()];
+        assert_eq!(col("n_seeds"), "3");
+        assert_eq!(col("control_mean"), "20");
+        assert_eq!(col("diff_mean"), "2");
+        assert_eq!(col("diff_sd"), "1");
+        let half = 4.303 / 3f64.sqrt();
+        assert!((col("diff_ci95_low").parse::<f64>().unwrap() - (2.0 - half)).abs() < 1e-9);
+        assert_eq!(
+            (
+                col("seeds_intervention_higher"),
+                col("seeds_intervention_lower")
+            ),
+            ("3", "0")
+        );
+
+        // One seed: no spread or interval, left empty.
+        let one = aggregate_csv(&[trade], &results[..1]);
+        let row: Vec<&str> = one.lines().nth(1).unwrap().split(',').collect();
+        assert_eq!(
+            row[header.iter().position(|h| *h == "diff_sd").unwrap()],
+            ""
+        );
     }
 }

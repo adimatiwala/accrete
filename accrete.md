@@ -1063,7 +1063,7 @@ These point to the next experiments: longer trips (more scarcity), and goods tha
 
 ### A.10 Not yet implemented, and suggested next steps
 
-* **Run storage:** each run should keep a manifest (seed, full config, commit, `Cargo.lock` hash), which reproduces it exactly given determinism, plus the daily metrics (CSV now, Parquet later), periodic snapshots, and a SQLite or DuckDB index of runs.
+* **Run storage:** manifests and `accrete reproduce` are done (A.19). Still to do: Parquet metrics, periodic snapshots per run, and a SQLite or DuckDB index of runs.
 * **Parameter → behaviour mapping:**
   * a Latin-hypercube or Sobol design over parameters, with about 10 seeds per point;
   * surrogate models (Gaussian process or gradient-boosted trees) from parameters to emergence metrics;
@@ -1350,3 +1350,24 @@ The scarcity results quoted in A.9 came from the calibration runs described in A
 * Test directories could collide on macOS's microsecond clock (a flaky failure about 1 in 19 runs); they now use a counter.
 * The no-op guard ran after the control and earlier pairs had already run; it now checks every experiment before any run.
 * Several claims were narrowed to match the evidence: the mechanism behind the fertility fall, equilibrium (now backed by the 900-day runs), settlements at ×0.2, lifespan, the comparison with the calibration, and per-seed spread.
+
+### A.19 Phase 2 tooling: manifests, seed ranges, parallel seeds, aggregates
+
+Phase 2 (Section 9) asks for results across many seeds with uncertainty, and A.10 asks for runs that can be reproduced from a record. This entry adds both. Parameter sweeps come next.
+
+| Piece | What and why |
+|---|---|
+| **Run manifests** (`<label>_seed<N>_manifest.json`) | Written by `run::drive`, so every `run`, `branch` and `experiments` run has one. It records how to recreate the run (a fresh world from seed and config, or a snapshot file with its byte hash plus the config applied on load), the tick count, the start and final state hashes, the full config, the command line, and provenance: accrete version, git commit and dirty flag (embedded by `crates/accrete-cli/build.rs`, which works offline), and a hash of `Cargo.lock`. Snapshot paths are stored absolute; if one has moved, the copy next to the manifest is used. |
+| **`accrete reproduce <manifest>`** | Re-runs the manifest and checks the final state hash, exiting 1 if it differs. It notes when the current build's commit or `Cargo.lock` differs from the recording one, or when the recording build was dirty. It refuses a snapshot whose bytes have changed. Determinism makes the final hash a complete check. |
+| **Seed ranges** (`--seed 1-10`) | `seed::parse_seed_list` in core, for `run`, `experiments`, `world` and `render`. An integer range expands; anything else is one seed, so text seeds with a dash (`river-valley`) still work. Duplicates are dropped; backwards or oversized ranges (over 10,000) are rejected. |
+| **Parallel seeds** (`experiments --jobs N`) | Seeds are independent simulations, which the determinism rules allow to run in parallel; each seed's runs stay sequential. `parallel::map_ordered` returns results in seed order, so every output file is byte-identical to `--jobs 1` (tested). Four seeds ran in 2.2 s with `--jobs 4`, against 6.4 s sequentially. |
+| **Aggregates** (`emergence_aggregate.csv`) | Per experiment and outcome, over seeds: the mean control and intervention values, the mean **paired** difference (intervention minus control, same seed) with its sample SD and 95 % t-interval, and how many seeds went up or down. Cells are left empty where a statistic is undefined (one seed). Outcomes: population, total births, births per adult-day, starvation deaths, home moves, trades, trail tiles, road tiles, hamlets, clustering R, foraging radius, and walking per unit of food. A summary is printed at the end. |
+
+**Tests:**
+* A fresh run and a run resumed with an intervention both reproduce from their manifests; a manifest with one tick fewer does not; a changed snapshot file is refused.
+* Manifests round-trip, and other format versions are rejected.
+* Seed-list parsing covers ranges, dashed text seeds, deduplication, and backwards, oversized and empty lists.
+* `map_ordered` keeps order for 1–64 jobs.
+* The t-interval is checked against hand-computed values.
+* The aggregate pairs differences by seed and leaves undefined cells empty.
+* Three seeds give byte-identical summary, aggregate and metrics files with `--jobs 1` and `--jobs 3`.

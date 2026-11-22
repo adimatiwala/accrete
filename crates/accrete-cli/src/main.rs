@@ -15,15 +15,18 @@
 mod branch;
 mod experiments;
 mod image;
+mod manifest;
+mod parallel;
 mod run;
 mod trace;
 
 use std::path::PathBuf;
 use std::time::Instant;
 
+use accrete_core::seed::{parse_seed, parse_seed_list};
 use accrete_core::world::stats::world_stats;
 use accrete_core::world::validate::validate_world;
-use accrete_core::{Config, generate_world, hash, seed::parse_seed};
+use accrete_core::{Config, generate_world, hash};
 use accrete_viz::Overlay;
 use clap::{Parser, Subcommand};
 
@@ -44,7 +47,8 @@ struct Cli {
 enum Cmd {
     /// Generate a world and print statistics, validation results, and its hash.
     World {
-        /// One or more seeds (comma separated; decimal, 0x-hex, or text).
+        /// One or more seeds (comma separated; decimal, 0x-hex, text, or a
+        /// range like 1-10).
         #[arg(long, default_value = "1", value_delimiter = ',')]
         seed: Vec<String>,
         /// Print full statistics as JSON.
@@ -53,7 +57,8 @@ enum Cmd {
     },
     /// Run the simulation headlessly and export metrics.
     Run {
-        /// One or more seeds (comma separated; default 1). Not allowed with
+        /// One or more seeds (comma separated, ranges like 1-10; default 1).
+        /// Not allowed with
         /// `--load`, which resumes the snapshot's own world.
         #[arg(long, value_delimiter = ',')]
         seed: Vec<String>,
@@ -92,7 +97,7 @@ enum Cmd {
     },
     /// Week 3 Day 5 emergence suite: paired ablations (trade, trails, selfish).
     Experiments {
-        /// One or more seeds (comma separated).
+        /// One or more seeds (comma separated, ranges like 1-10).
         #[arg(long, default_value = "1", value_delimiter = ',')]
         seed: Vec<String>,
         /// Days to simulate for each run.
@@ -108,9 +113,18 @@ enum Cmd {
         /// Subset of experiments: trade, trails, selfish (comma separated).
         #[arg(long, value_delimiter = ',')]
         only: Vec<String>,
+        /// Seeds to run in parallel (default 1). Each seed's runs stay
+        /// sequential; outputs are identical whatever the value.
+        #[arg(long, default_value_t = 1)]
+        jobs: usize,
         /// Config overrides applied to the shared base (repeatable).
         #[arg(long = "set")]
         sets: Vec<String>,
+    },
+    /// Re-run a run manifest and check it ends on the recorded state hash.
+    Reproduce {
+        /// A `*_manifest.json` written by run, branch or experiments.
+        manifest: PathBuf,
     },
     /// Load a snapshot and run a control and an intervention side by side.
     Branch {
@@ -176,7 +190,7 @@ enum Cmd {
     Config,
     /// Render world overlays to PNG images.
     Render {
-        /// One or more seeds (comma separated). With several seeds and
+        /// One or more seeds (comma separated, ranges like 1-10). With several seeds and
         /// `--montage`, the images are tiled into one picture per overlay.
         #[arg(long, default_value = "1", value_delimiter = ',')]
         seed: Vec<String>,
@@ -244,14 +258,15 @@ fn main() {
                 timelapse: &timelapse,
                 save: save.as_deref(),
                 stop_on_extinction: true,
+                loaded_from: load.as_deref(),
             };
-            if let Some(path) = load {
+            if let Some(path) = &load {
                 if !seed.is_empty() {
                     fail("--seed cannot be combined with --load: the snapshot fixes the world");
                 }
                 // Start from the snapshot's own config; --config replaces it
                 // and --set adjusts it (either one makes an intervention).
-                let snap = run::load(&path, None, &label);
+                let snap = run::load(path, None, &label);
                 let mut c = if cli.config.is_some() {
                     config
                 } else {
@@ -276,15 +291,15 @@ fn main() {
                 }
                 config.sim.check_invariants |= check;
                 let seeds = if seed.is_empty() {
-                    vec!["1".to_string()]
+                    vec![1]
                 } else {
-                    seed
+                    parse_seed_list(&seed).unwrap_or_else(|e| fail(&e))
                 };
                 if save.is_some() && seeds.len() > 1 {
                     fail("--save needs a single seed");
                 }
                 for s in seeds {
-                    run::run(parse_seed(&s), &config, &opts);
+                    run::run(s, &config, &opts);
                 }
             }
         }
@@ -296,12 +311,13 @@ fn main() {
             check,
             only,
             sets,
+            jobs,
         } => {
             let mut config = config;
             for kv in &sets {
                 config = run::apply_override(&config, kv);
             }
-            let seeds: Vec<u64> = seed.iter().map(|s| parse_seed(s)).collect();
+            let seeds = parse_seed_list(&seed).unwrap_or_else(|e| fail(&e));
             experiments::run_suite(
                 &config,
                 experiments::ExperimentsArgs {
@@ -311,8 +327,38 @@ fn main() {
                     every,
                     check,
                     only,
+                    jobs,
                 },
             );
+        }
+        Cmd::Reproduce { manifest } => {
+            let m = manifest::Manifest::read(&manifest).unwrap_or_else(|e| fail(&e));
+            let base = manifest.parent().unwrap_or(std::path::Path::new("."));
+            println!(
+                "reproducing {} (seed {}, {} ticks from tick {}, recorded by accrete {} at {})",
+                manifest.display(),
+                m.seed,
+                m.ticks,
+                m.start_tick,
+                m.build.accrete_version,
+                m.build.git_commit
+            );
+            let r = manifest::reproduce(&m, base).unwrap_or_else(|e| fail(&e));
+            for d in &r.build_differences {
+                println!("  note: {d}");
+            }
+            if !r.start_matches {
+                println!("  warning: the start state differs from the recorded one");
+            }
+            if r.matches {
+                println!("  reproduced: final state hash {} matches", r.final_hash);
+            } else {
+                eprintln!(
+                    "  NOT reproduced: final state hash {} (manifest says {})",
+                    r.final_hash, m.final_state_hash
+                );
+                std::process::exit(1);
+            }
         }
         Cmd::Branch {
             load,
@@ -340,8 +386,7 @@ fn main() {
             });
         }
         Cmd::World { seed, json } => {
-            for s in seed {
-                let seed = parse_seed(&s);
+            for seed in parse_seed_list(&seed).unwrap_or_else(|e| fail(&e)) {
                 let t0 = Instant::now();
                 let world = generate_world(seed, &config);
                 let gen_ms = t0.elapsed().as_secs_f64() * 1000.0;
@@ -415,9 +460,10 @@ fn main() {
             montage,
         } => {
             std::fs::create_dir_all(&out).expect("create output dir");
-            let worlds: Vec<_> = seed
+            let worlds: Vec<_> = parse_seed_list(&seed)
+                .unwrap_or_else(|e| fail(&e))
                 .iter()
-                .map(|s| generate_world(parse_seed(s), &config))
+                .map(|&s| generate_world(s, &config))
                 .collect();
             let overlays: Vec<Overlay> = if overlay.iter().any(|o| o == "all") {
                 Overlay::ALL.to_vec()

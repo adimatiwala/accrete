@@ -192,6 +192,7 @@ pub fn branch(a: BranchArgs) {
             timelapse: &[],
             save: None,
             stop_on_extinction: false,
+            loaded_from: Some(&a.load),
         },
     );
     intervention = run::drive(
@@ -205,6 +206,7 @@ pub fn branch(a: BranchArgs) {
             timelapse: &[],
             save: None,
             stop_on_extinction: false,
+            loaded_from: Some(&a.load),
         },
     );
 

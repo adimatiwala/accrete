@@ -28,6 +28,8 @@ pub struct RunOpts<'a> {
     /// going, so both series cover the same days (population 0 after
     /// extinction; the world keeps changing).
     pub stop_on_extinction: bool,
+    /// The snapshot this run was loaded from, if any (for its manifest).
+    pub loaded_from: Option<&'a Path>,
 }
 
 /// A run label is used in output file names: it must be a plain name.
@@ -114,6 +116,18 @@ pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
     let (label, seed, timelapse, out) = (opts.label, sim.world.seed, opts.timelapse, opts.out);
     let t1 = Instant::now();
     let tick0 = sim.tick;
+    let start_state_hash = hash::hex(sim.state_hash());
+    let start = match opts.loaded_from {
+        Some(p) => crate::manifest::Start::Snapshot {
+            // Absolute, so the manifest works from any directory.
+            path: std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()),
+            file_hash: crate::manifest::file_hash(p).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(1)
+            }),
+        },
+        None => crate::manifest::Start::Fresh { seed },
+    };
     let mut frames: Vec<(Canvas, Canvas)> = Vec::new();
     let mut extinct = sim.population() == 0;
     if timelapse.contains(&sim.day()) {
@@ -214,6 +228,36 @@ pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
             sim.day(),
             path.display()
         );
+    }
+    let mut outputs = vec![
+        format!("{base}_metrics.csv"),
+        format!("{base}_deaths.csv"),
+        format!("{base}_final.png"),
+    ];
+    if let Some(p) = opts.save {
+        outputs.push(p.display().to_string());
+    }
+    let manifest = crate::manifest::Manifest {
+        format: crate::manifest::MANIFEST_FORMAT,
+        build: crate::manifest::Build::current(),
+        command: std::env::args().collect(),
+        label: label.to_string(),
+        seed,
+        start,
+        start_tick: tick0,
+        start_state_hash,
+        ticks: sim.tick - tick0,
+        final_tick: sim.tick,
+        final_state_hash: hash::hex(sim.state_hash()),
+        config: sim.config.clone(),
+        outputs,
+    };
+    match manifest.write(out) {
+        Ok(p) => println!("  manifest written to {}", p.display()),
+        Err(e) => {
+            eprintln!("error: {e}");
+            std::process::exit(1)
+        }
     }
     sim
 }

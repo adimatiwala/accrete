@@ -43,6 +43,11 @@ cargo run --release -p accrete-cli -- run --seed 1 --set infrastructure.househol
 cargo run --release -p accrete-cli -- experiments --seed 1 --days 100 -o results/emergence
 cargo run --release -p accrete-cli -- experiments --seed 1,2,3 --days 300 --only scarcity40,scarcity20 -o results/scarcity
 
+# Phase 2: ten seeds in parallel, with 95% intervals in emergence_aggregate.csv
+cargo run --release -p accrete-cli -- experiments --seed 1-10 --jobs 8 --days 300 -o results/phase2
+# Every run writes a manifest; check that one reproduces exactly
+cargo run --release -p accrete-cli -- reproduce results/phase2/control_seed1_manifest.json
+
 # Why did agent 42 do that? Tick-by-tick options and utility terms
 cargo run --release -p accrete-cli -- trace --seed 1 --day 120 --ticks 24 --agent 42 --options
 
