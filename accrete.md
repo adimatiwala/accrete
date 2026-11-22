@@ -112,7 +112,9 @@ accrete/
 │   └── accrete-cli/
 │       └── src/main.rs
 ├── tests/
-│   └── golden/               # committed state hashes, shared by both OSes
+│   ├── golden/               # committed state hashes, shared by both OSes
+│   ├── scenarios/            # tiny hand-built worlds for behaviour tests
+│   └── benchmarks/           # accepted ranges for behavioural benchmarks
 ├── experiments/
 └── results/                  # gitignored generated outputs
 ```
@@ -565,12 +567,13 @@ This is the densest week. If it runs over, Week 3 Day 5 (experiments) is the buf
 - On death, transfer the agent's whole inventory to its home's chests or its tile, and update the home's residents.
 - Clicking an agent reveals needs, inventory, traits, skills, home, remembered places, goal, action score breakdown, age, frailty, health ceiling, and reproduction eligibility; for dead agents, the cause of death.
 - Record a rolling event log of actions and resource changes.
+- Add the scenario-test runner and the Week 2 scenarios, and the four pathology detectors (see *Behavioural evaluation*).
 - Test resource conservation, deterministic updates, death, and bounded agent properties.
 - Compare a plentiful-food world against a scarce-food world, including births, deaths by cause, and lifespan.
 
 **Week 2 deliverable:** A starting population of 100 locally informed agents who explore, gather, consume resources, migrate in response to scarcity, form shared homes with storage, age, reproduce, and die.
 
-**Acceptance criteria:** Agents make valid independent decisions; agents never route through tiles they don't know; resource constraints are respected, including carry limits, storage capacity, spoilage, births, and deaths; inspection explains choices and every death; same seed/config reproduces the same state at a given tick; survival, births, and lifespans differ under controlled scarcity conditions; the population never exceeds the safety cap.
+**Acceptance criteria:** Agents make valid independent decisions; agents never route through tiles they don't know; resource constraints are respected, including carry limits, storage capacity, spoilage, births, and deaths; inspection explains choices and every death; same seed/config reproduces the same state at a given tick; survival, births, and lifespans differ under controlled scarcity conditions; the population never exceeds the safety cap; all Week 2 scenario tests pass; pathology counts stay near zero on the primary seed.
 
 ## 7. Week 3 — Emergent settlements, trade, and infrastructure
 
@@ -613,6 +616,7 @@ This is the densest week. If it runs over, Week 3 Day 5 (experiments) is the buf
 - Compare runs with and without barter.
 - Compare runs with and without trail travel discounts.
 - Compare strictly selfish agents (household weight 0, reciprocity off) against the default motives.
+- Add the Week 3 scenarios for trade, reciprocity, and road building.
 - Measure persistent clusters, average trip length, resource flows, and path network connectivity.
 - Inspect failure modes: isolated agents, starvation loops, excessive clustering, and overpowered roads.
 
@@ -648,7 +652,9 @@ This is the densest week. If it runs over, Week 3 Day 5 (experiments) is the buf
 
 ### Day 4: Metrics and headless runner
 
-- Export CSV/JSON metrics: population, births, deaths by cause, age distribution, mean lifespan, mean frailty, health, hunger, settlement count, settlement persistence, trade volume, average travel cost, inventory distribution, and recovery time (time for population and births to return to their pre-shock levels). Flag runs that hit the safety cap.
+- Export CSV/JSON metrics: population, births, deaths by cause, age distribution, mean lifespan, mean frailty, health, hunger, settlement count, settlement persistence, trade volume, average travel cost, inventory distribution, and recovery time (time for population and births to return to their pre-shock levels), plus pathology counts (oscillating, stuck, starved beside food, idle). Flag runs that hit the safety cap.
+- Add random and omniscient baseline agents, and compare normal agents against both on the primary seed.
+- Record behavioural benchmark ranges from the first validated runs, and run them as tests.
 - Add CLI commands for seeded runs, snapshot loading, scenario selection, and result export.
 - Validate the whole pipeline on the single primary seed first. The CLI must already accept a list of seeds, so scaling up later needs no code changes.
 
@@ -656,7 +662,7 @@ This is the densest week. If it runs over, Week 3 Day 5 (experiments) is the buf
 
 - Build an interactive viewer with play/pause, tick step, speed control, seed selection, map overlays, and agent inspection.
 - Add a scenario selector and control-versus-intervention plots or exports.
-- Test replay, snapshot compatibility, performance, and long-run stability.
+- Test replay, snapshot compatibility, performance, long-run stability, and that all scenario tests and behavioural benchmarks pass on both OSes.
 - Record a short demo of a world developing, branching, and responding to drought.
 
 **Week 4 deliverable:** A reproducible local experiment that compares the same emergent civilization under two different conditions.
@@ -732,6 +738,78 @@ Distinguish (1) raw traffic, (2) an emergent worn trail above a traffic threshol
 - A long run (for example 300 days) shows generational turnover: some initial agents die of old age and newborns reach maturity.
 - A run with abundant food and low thresholds hits the 1,000-agent cap without exceeding it, and is flagged.
 
+### Behavioural evaluation
+
+The unit and integration tests check that the **mechanics** are correct. Behavioural evaluation checks that agents **act sensibly**. A run can conserve every resource and still have agents starving next to food or pacing back and forth. Accrete's agents are deterministic utility scorers, not language models, so this is ordinary automated testing rather than LLM-style evals.
+
+There are four layers.
+
+#### 1. Scenario tests (Week 2, extended in Week 3)
+
+Each scenario is a tiny hand-built world, usually 10×10 tiles and loaded from a small file in `tests/scenarios/`, with one situation and an expected outcome within a tick limit. Scenarios bypass procedural generation, so they don't change when terrain generation is tuned.
+
+Week 2 scenarios:
+
+| Scenario | Expected outcome |
+|---|---|
+| Hungry agent, known food 3 tiles away | Walks there, gathers, and eats within 12 ticks |
+| Hungry agent, no known food | Explores instead of idling |
+| Exhausted agent | Rests before energy reaches 0 |
+| Food hidden behind a hill | Agent is not drawn to it until it sees it |
+| Unknown shortcut | Route uses only known tiles |
+| Two agents, one food tile with little food | Resource is split without duplication; neither waits forever |
+| Home over comfortable capacity for over 7 days | At least one adult moves out within 14 days |
+| Agent eligible to reproduce, but hungry | Eats first |
+| Full inventory, chest at home | Deposits instead of discarding or idling |
+
+Week 3 scenarios:
+
+| Scenario | Expected outcome |
+|---|---|
+| Two neighbours, one with surplus food and one with surplus wood | They trade |
+| Two neighbours with identical surpluses | They don't trade |
+| Partner with a low reciprocity score | Gets worse terms or is avoided |
+| Busy worn trail used by the agent and its household | `ImproveTrail` is eventually chosen |
+| Same trail, strictly selfish agent with few crossings | `ImproveTrail` is not chosen |
+
+Scenarios check **outcomes within a window**, not exact tick-by-tick traces, so they keep passing while weights are retuned, as long as the behaviour stays sensible.
+
+#### 2. Pathology detectors (Week 2)
+
+These are counters that run during every simulation and appear in the metrics export and the viewer:
+
+| Detector | Definition (defaults) |
+|---|---|
+| **Oscillating** | Goal switched more than 6 times in 24 ticks |
+| **Stuck** | No movement and no progress on any goal for 12 ticks, while not resting |
+| **Starved beside food** | Died of deprivation while food it knew about was reachable within 2 days of travel |
+| **Idle** | More than 8 ticks in a day with no useful action while not resting |
+
+A healthy run keeps each count near zero. Every flagged event is logged with the agent ID and tick, so it can be inspected.
+
+#### 3. Behavioural benchmarks (Week 4)
+
+Golden hashes fail on every parameter change, by design. Benchmarks fail only when behaviour leaves a sensible range. They run on the primary seed with fixed settings, and the ranges are stored in `tests/benchmarks/`:
+- survival at day 100 within an expected range;
+- mean hunger of living agents below a threshold;
+- most homes within a few tiles of fertile land;
+- pathology counts below their limits;
+- births and deaths both happening, with the population neither collapsing nor hitting the cap.
+
+The ranges are set from the first validated runs and widened or narrowed deliberately, with the reason recorded. Hashes show *whether* anything changed; benchmarks show whether it changed *for the worse*.
+
+#### 4. Baselines (Week 4)
+
+Two reference kinds of agent, chosen in the config, run on the same seed:
+- **Random:** picks any valid action at random from its own RNG stream. This is the lower bound.
+- **Omniscient:** uses the same decision logic, but sees the whole map and knows every resource. This is the upper bound.
+
+Normal agents should land clearly between them on survival and on travel per unit of food gathered. Scoring like random agents means the decision logic isn't working. Scoring like omniscient agents means the limits on sight and memory aren't constraining anything. Baselines exist only for evaluation and never mix with normal agents in a run.
+
+#### Later: pattern-oriented validation (Phase 2)
+
+Once there are many seeds, check whether the results show broad patterns seen in real pre-modern societies, for example settlements concentrated near rivers and fertile land, and many small settlements with few large ones. These are comparisons of shape, not predictions, and a mismatch is reported rather than tuned away.
+
 ### Performance tests
 
 - Benchmark 100, 500, and 1,000 agents over a fixed number of ticks.
@@ -777,7 +855,7 @@ Minimum UI:
 - Top bar: seed, tick/day, agent count, play/pause, step, speed, regenerate.
 - Map layers: biome, elevation, food, wood, stone, traffic, settlement clusters.
 - Inspector: click tile or agent; show state, local knowledge, current goal, and decision explanation.
-- Metrics panel: population, births and deaths by cause, age distribution, average hunger, trade activity, settlement count, travel cost.
+- Metrics panel: population, births and deaths by cause, age distribution, average hunger, trade activity, settlement count, travel cost, and pathology counts (click a count to jump to the flagged agents).
 - Experiment controls: load snapshot, select drought or route disruption, branch and compare.
 
 Prioritize readability and responsiveness over elaborate graphics. Colored tiles and moving dots are enough for a convincing first version.
@@ -789,7 +867,7 @@ The MVP is complete when a user can:
 1. Start Accrete locally on macOS (Apple Silicon) or Windows, offline and without cloud dependencies.
 2. Generate a repeatable world from a seed.
 3. Watch at least 100 independently acting agents survive, explore, and interact.
-4. Inspect and understand individual decisions.
+4. Inspect and understand individual decisions, and confirm with scenario tests, pathology counts, and baselines that agents behave sensibly.
 5. Observe and measure whether stable clusters and transport patterns emerge.
 6. Save a world, branch it into control and intervention scenarios, and replay both.
 7. Export metrics and reproduce results using the CLI.
