@@ -1,0 +1,57 @@
+name = "overcrowded-home"
+description = "Home over comfortable capacity for over 7 days: at least one adult moves out within 14 days."
+map = """
+................
+................
+................
+................
+................
+................
+................
+................
+"""
+[[home]]
+at = [7, 4]
+chests = [60.0]
+crowded_days = 8.0
+
+[[food]]
+at = [2, 2]
+amount = 400.0
+[[food]]
+at = [12, 2]
+amount = 400.0
+[[food]]
+at = [2, 6]
+amount = 400.0
+[[food]]
+at = [12, 6]
+amount = 400.0
+[[food]]
+at = [7, 1]
+amount = 400.0
+
+[[agent]]
+at = [7, 4]
+home = 0
+food = 6.0
+[[agent]]
+at = [7, 4]
+home = 0
+food = 6.0
+[[agent]]
+at = [7, 4]
+home = 0
+food = 6.0
+[[agent]]
+at = [7, 4]
+home = 0
+food = 6.0
+[[agent]]
+at = [7, 4]
+home = 0
+food = 6.0
+[[agent]]
+at = [7, 4]
+home = 0
+food = 6.0

@@ -1,0 +1,16 @@
+name = "food-behind-hill"
+description = "Food hidden behind a mountain ridge: the agent is not drawn to it until it sees it."
+map = """
+....m.....
+....m.....
+....m.....
+....m.....
+....m.....
+"""
+[[food]]
+at = [6, 2]
+amount = 20.0
+
+[[agent]]
+at = [1, 2]
+hunger = 0.5

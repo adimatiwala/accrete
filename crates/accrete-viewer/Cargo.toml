@@ -1,0 +1,12 @@
+[package]
+name = "accrete-viewer"
+description = "Interactive macroquad viewer for Accrete."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+accrete-core.workspace = true
+accrete-viz.workspace = true
+macroquad.workspace = true

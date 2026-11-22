@@ -1,0 +1,16 @@
+name = "identical-surpluses"
+description = "Two neighbours with identical surpluses: they don't trade."
+map = """
+........
+........
+........
+"""
+[[agent]]
+at = [3, 1]
+hunger = 0.1
+food = 24.0
+
+[[agent]]
+at = [4, 1]
+hunger = 0.1
+food = 24.0

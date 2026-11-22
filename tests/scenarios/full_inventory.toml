@@ -1,0 +1,16 @@
+name = "full-inventory-chest-at-home"
+description = "Full inventory, chest at home: deposits instead of discarding or idling."
+map = """
+........
+........
+........
+"""
+[[home]]
+at = [3, 1]
+chests = [0.0]
+
+[[agent]]
+at = [3, 1]
+home = 0
+hunger = 0.1
+food = 30.0

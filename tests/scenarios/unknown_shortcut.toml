@@ -1,0 +1,10 @@
+name = "unknown-shortcut"
+description = "A short way exists through unknown land; the route must use only known tiles."
+map = """
+..............
+.~~~~~~~~~~~~.
+..............
+"""
+[[agent]]
+at = [0, 0]
+knows = "sight"

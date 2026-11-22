@@ -1,0 +1,16 @@
+name = "hungry-known-food"
+description = "Hungry agent, known food 3 tiles away: walks there, gathers, and eats within 12 ticks."
+map = """
+..........
+..........
+..........
+..........
+..........
+"""
+[[food]]
+at = [6, 2]
+amount = 10.0
+
+[[agent]]
+at = [3, 2]
+hunger = 0.6

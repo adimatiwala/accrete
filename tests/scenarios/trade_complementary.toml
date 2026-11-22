@@ -1,0 +1,23 @@
+name = "complementary-surpluses"
+description = "Two neighbours, one with surplus food and one with surplus wood: they trade."
+map = """
+........
+........
+........
+"""
+[[home]]
+at = [3, 1]
+
+# Agent 0 has a home without storage, so it wants 10 wood; it holds plenty of food.
+[[agent]]
+at = [3, 1]
+home = 0
+hunger = 0.1
+food = 24.0
+
+# Agent 1 is homeless (wants no wood) and hungry, holding wood and no food.
+[[agent]]
+at = [4, 1]
+hunger = 0.45
+food = 0.0
+wood = 12.0
