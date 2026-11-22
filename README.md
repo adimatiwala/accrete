@@ -54,11 +54,11 @@ explain the change in the commit message.
 
 | Seed | Population | Hamlets + forming | Clustering R (day 30 → 300) | Foraging radius | Shelters | Starvation deaths | Pathologies |
 |---|---|---|---|---|---|---|---|
-| 1 | 100 → 507 | 4 + 3 | 0.95 → 0.49 | 1.6 → 3.8 tiles | 41 | 0 | 0 |
-| 2 | 100 → 583 | 4 + 5 | 1.08 → 0.53 | 1.4 → 4.5 tiles | 49 | 0 | 0 |
-| 3 | 100 → 442 | 3 + 1 | 1.08 → 0.40 | 1.4 → 3.0 tiles | 34 | 0 | 0 |
+| 1 | 100 → 513 | 3 + 3 | 0.95 → 0.52 | 1.6 → 4.2 tiles | 48 | 0 | 0 |
+| 2 | 100 → 548 | 3 + 4 | 1.08 → 0.56 | 1.4 → 4.5 tiles | 54 | 0 | 0 |
+| 3 | 100 → 458 | 1 + 2 | 1.08 → 0.45 | 1.4 → 3.1 tiles | 37 | 0 | 0 |
 
-- **Clustering:** homes cluster along rivers, from a random pattern (R ≈ 1) to strongly clustered (R ≈ 0.45), and families bud off into hamlets that last 100+ days.
+- **Clustering:** homes cluster along rivers, from a random pattern (R ≈ 1) to strongly clustered (R ≈ 0.45–0.56), and families bud off into hamlets that last 100+ days.
 - **Depletion:** settlements wear down the land around them, so foraging trips lengthen over time; the viewer's depletion overlay shows this clearly.
 - **Shelters:** crowded families pool wood and stone to upgrade their homes.
 - **Sharing:** knowledge of food spreads through meetings.

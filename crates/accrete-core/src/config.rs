@@ -621,6 +621,8 @@ impl Default for DecisionConfig {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct PathologyConfig {
+    /// Oscillating = more than this many goal abandonments within
+    /// `oscillation_window_ticks`.
     pub oscillation_switches: u32,
     pub oscillation_window_ticks: u32,
     pub stuck_ticks: u32,

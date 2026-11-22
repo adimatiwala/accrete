@@ -60,7 +60,7 @@ fn hungry_agent_without_known_food_explores() {
         if sim.agents[0].goal.kind == GoalKind::Explore {
             explored = true;
         }
-        if sim.intents[0] == Intent::Idle {
+        if sim.intent_of(sim.agents[0].id) == Some(Intent::Idle) {
             idle += 1;
         }
     }
@@ -79,7 +79,7 @@ fn exhausted_agent_rests_before_energy_runs_out() {
     for _ in 0..24 {
         sim.step();
         assert!(sim.agents[0].energy > 0.0, "energy reached 0");
-        if sim.intents[0] == Intent::Rest {
+        if sim.intent_of(sim.agents[0].id) == Some(Intent::Rest) {
             rested = true;
         }
     }
@@ -198,7 +198,11 @@ fn overcrowded_home_sheds_a_resident() {
 fn eligible_but_hungry_agent_eats_first() {
     let mut sim = load("reproduce_but_hungry.toml");
     sim.step();
-    assert_eq!(sim.intents[0], Intent::Eat, "should eat before reproducing");
+    assert_eq!(
+        sim.intent_of(sim.agents[0].id),
+        Some(Intent::Eat),
+        "should eat before reproducing"
+    );
 }
 
 #[test]

@@ -1017,19 +1017,13 @@ impl JoinInfo {
         }
     }
 
-    pub fn remembered(m: &crate::agents::memory::HomeMemory, cx: &Ctx) -> Self {
+    pub fn remembered(m: &crate::agents::memory::HomeMemory) -> Self {
         Self {
             id: m.home,
             residents: m.residents,
             has_storage: m.has_storage,
-            // Shelter levels are visible; the base capacity is common knowledge.
-            comfortable: cx
-                .world
-                .homes
-                .get(m.home as usize)
-                .map_or(cx.config.homes.comfortable_capacity, |h| {
-                    h.comfortable_capacity(cx.config.homes.comfortable_capacity)
-                }),
+            // As last seen: shelter levels are visible, but may have changed since.
+            comfortable: m.comfortable,
             own: false,
             crowded: false,
         }
@@ -1060,7 +1054,9 @@ pub fn site_score(agent: &Agent, cx: &Ctx, site: Pos, join: Option<JoinInfo>) ->
         return None;
     }
     let joining_own = join.is_some_and(|j| j.own);
-    if join.is_none() && world.homes_on(site).len() as u32 >= c.homes.max_homes_per_tile {
+    // A tile the agent believes is full (as last seen). If it filled up since,
+    // `EstablishHome` finds out on arrival and the agent re-plans.
+    if join.is_none() && agent.memory.believed_homes_on(site) >= c.homes.max_homes_per_tile {
         return None;
     }
 
@@ -1189,7 +1185,7 @@ pub fn plan_home(agent: &Agent, cx: &Ctx) -> Option<HomePlan> {
         if Some(hm.home) == agent.home {
             continue;
         }
-        let info = JoinInfo::remembered(hm, cx);
+        let info = JoinInfo::remembered(hm);
         // Join only homes the agent remembers as having room.
         if info.residents < info.comfortable {
             consider(hm.pos, Some(info), &mut best);

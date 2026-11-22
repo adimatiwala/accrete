@@ -33,7 +33,20 @@ pub struct HomeMemory {
     pub pos: Pos,
     pub residents: u32,
     pub has_storage: bool,
+    /// Comfortable capacity as last seen (the shelter level is visible).
+    pub comfortable: u32,
+    /// Homes standing on the same tile as last seen.
+    pub tile_homes: u32,
     pub seen_tick: u64,
+}
+
+/// What an agent sees of a home when the home's tile is in sight.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HomeSighting {
+    pub residents: u32,
+    pub has_storage: bool,
+    pub comfortable: u32,
+    pub tile_homes: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -460,18 +473,12 @@ impl AgentMemory {
         self.resources.retain(|m| visible(m.pos));
     }
 
-    pub fn note_home(
-        &mut self,
-        home: HomeId,
-        pos: Pos,
-        residents: u32,
-        has_storage: bool,
-        tick: u64,
-        cap: usize,
-    ) {
+    pub fn note_home(&mut self, home: HomeId, pos: Pos, seen: HomeSighting, tick: u64, cap: usize) {
         if let Some(h) = self.homes.iter_mut().find(|h| h.home == home) {
-            h.residents = residents;
-            h.has_storage = has_storage;
+            h.residents = seen.residents;
+            h.has_storage = seen.has_storage;
+            h.comfortable = seen.comfortable;
+            h.tile_homes = seen.tile_homes;
             h.seen_tick = tick;
             h.pos = pos;
             return;
@@ -479,8 +486,10 @@ impl AgentMemory {
         let e = HomeMemory {
             home,
             pos,
-            residents,
-            has_storage,
+            residents: seen.residents,
+            has_storage: seen.has_storage,
+            comfortable: seen.comfortable,
+            tile_homes: seen.tile_homes,
             seen_tick: tick,
         };
         if self.homes.len() < cap {
@@ -499,6 +508,16 @@ impl AgentMemory {
                 .expect("non-empty");
             self.homes[wi] = e;
         }
+    }
+
+    /// How many homes the agent believes stand on `p`: the latest count it
+    /// saw there, or 0 if it remembers no home on that tile.
+    pub fn believed_homes_on(&self, p: Pos) -> u32 {
+        self.homes
+            .iter()
+            .filter(|h| h.pos == p)
+            .max_by_key(|h| (h.seen_tick, h.home))
+            .map_or(0, |h| h.tile_homes)
     }
 
     pub fn forget_home(&mut self, home: HomeId) {
@@ -638,6 +657,8 @@ impl StableHash for AgentMemory {
             m.pos.stable_hash(h);
             h.u32(m.residents);
             h.bool(m.has_storage);
+            h.u32(m.comfortable);
+            h.u32(m.tile_homes);
             h.u64(m.seen_tick);
         }
         h.len(self.changed.len());

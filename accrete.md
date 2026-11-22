@@ -989,7 +989,7 @@ This appendix records what was built from this specification, in the order it wa
 | Settlement detection | Measurement only, never read by agents. Single linkage within R = 3, N = 5, M = 15, P = 60; identity is kept while at least half of the homes continue; hamlet, village and town classes. |
 | Trails | `traffic = 0.95·traffic + crossings`. A tile with traffic ≥ 20 wears into a trail (cost × 0.8) and fades after 30 days below the threshold. Agents route with the path levels they have *seen* (changed-tile memory), never the true map. |
 | **Knowledge sharing** | Agents on the same tile tell each other their best food memories, *keeping the original sighting time*, so nobody learns anything fresher than the teller knew. The number told is 1 + 2 × sociability (rounded). Nobody tells someone it distrusts. This follows the spec's "social knowledge exchange" direction and is the information-centre benefit of living together. |
-| **Barter** | Per the trade rule. Each agent values goods by its own needs: units below its food reserve or wanted materials are worth 1 (food, × (1 + hunger)) or 0.6, and units beyond need are worth 0.05. The proposer prices at the midpoint of both sides' marginal rates. Each side must gain more than the time the trade takes, only goods actually held change hands, and nobody receives more than it can carry. A partner that distrusts the proposer demands up to 40 % better terms. Agents try their most-trusted neighbours first. |
+| **Barter** | Per the trade rule. Each agent values goods by its own needs: units below its food reserve or wanted materials are worth 1 (food, × (1 + hunger)) or 0.6, and units beyond need are worth 0.05. The proposer prices at the midpoint of both sides' marginal rates. Each side must gain more than the time the trade takes, only goods actually held change hands, and nobody receives more than it can carry. A partner that distrusts the proposer demands up to 50 % better terms. Agents try their most-trusted neighbours first. |
 | **Reciprocity** | After each trade, each side's score for the other changes by `0.15 × (1 − 4·max(0, partner_share − 0.5))`: up when the split was fair, down when the partner took most of the gain. Scores drift 2 %/day back to neutral. Can be switched off. |
 | **Frequent tiles** | 16 slots; each crossing adds 1 and counts decay by a factor of 29/30 per day (≈ crossings over the last 30 days). Housemates read each other's lists. |
 | **Roads (`ImproveTrail`)** | Considered only on a worn trail the agent stands on, while holding 2 wood and 2 stone. The spec rule is `benefit = time_saved × (own + household_weight × sociability × household crossings)` over 30 days. Cost is 4 ticks of labour (less for diligent agents) **plus 6 ticks for gathering the materials**; that materials term is an added assumption. Labour is priced at the current value of time, which rises with hunger and fatigue. Roads start at condition 180 and lose 1 per day without traffic. Setting `household_weight = 0` gives strictly selfish agents. |
@@ -1042,14 +1042,14 @@ This appendix records what was built from this specification, in the order it wa
 
 | Seed | Population | Births | Deaths (deprivation / age) | Hamlets + forming | Clark-Evans R (day 30 → 300) | Foraging radius (tiles) | Depletion near homes | Shelters | Trail / road tiles | Trades / tips | Drought days |
 |---|---|---|---|---|---|---|---|---|---|---|---|
-| 1 | 100 → 507 | 661 | 0 / 254 | 4 + 3 | 0.95 → 0.49 | 1.6 → 3.8 | 0.93 → 0.79 | 41 | 21 / 1 | 418 / 41,766 | 0 |
-| 2 | 100 → 583 | 736 | 0 / 253 | 4 + 5 | 1.08 → 0.53 | 1.4 → 4.5 | 0.93 → 0.80 | 49 | 23 / 0 | 405 / 43,244 | 83 |
-| 3 | 100 → 442 | 570 | 0 / 228 | 3 + 1 | 1.08 → 0.40 | 1.4 → 3.0 | 0.94 → 0.77 | 34 | 34 / 0 | 372 / 35,370 | 27 |
+| 1 | 100 → 513 | 663 | 0 / 250 | 3 + 3 | 0.95 → 0.52 | 1.6 → 4.2 | 0.93 → 0.82 | 48 | 16 / 0 | 359 / 41,945 | 0 |
+| 2 | 100 → 548 | 700 | 0 / 252 | 3 + 4 | 1.08 → 0.56 | 1.4 → 4.5 | 0.93 → 0.82 | 54 | 18 / 0 | 386 / 40,747 | 83 |
+| 3 | 100 → 458 | 585 | 0 / 227 | 1 + 2 | 1.08 → 0.45 | 1.4 → 3.1 | 0.94 → 0.78 | 37 | 31 / 1 | 379 / 36,766 | 27 |
 
 All four pathology counters were 0 on every seed. The emergent findings:
-1. Homes go from a random pattern to strongly clustered (R ≈ 0.45), and kin-based hamlets persist for 100+ days.
+1. Homes go from a random pattern to strongly clustered (R ≈ 0.45–0.56), and kin-based hamlets persist for 100+ days.
 2. Settlements visibly deplete their surroundings, and foraging trips lengthen by 2–3×.
-3. Families upgrade crowded homes (34–49 shelter levels).
+3. Families upgrade crowded homes (37–54 shelter levels).
 4. Knowledge spreads through meetings. Barter happens, though at a low rate.
 
 Earlier calibrations (see A.4) showed the controlled-scarcity response the spec asks for. With food regrowth ×1 / ×0.4 / ×0.2, populations reached 605 / 157 / 42, **through fertility, not starvation**: a preventive check. These scarcity runs predate the trade, sharing, shelter and returns systems and have not been re-run.
@@ -1073,3 +1073,19 @@ These point to the next experiments: longer trips (more scarcity), and goods tha
   * a Latin-hypercube or Sobol design over parameters, with about 10 seeds per point;
   * surrogate models (Gaussian process or gradient-boosted trees) from parameters to emergence metrics;
   * Sobol or Morris sensitivity indices and partial-dependence curves.
+
+### A.11 Review fixes
+
+Seven issues from code review were fixed. Four of them change behaviour, so the golden state hashes (ticks 100 and 1,000) were re-recorded and the A.9 results were re-run; the world hash is unchanged.
+
+| Fix | Before | After |
+|---|---|---|
+| **Home choice from memory** | Site scoring read the true number of homes on a tile and the current shelter level of remembered homes. | `HomeMemory` stores the tile's home count and the home's comfortable capacity when seen; scoring uses those. A tile that filled up since is discovered on arrival. |
+| **Failed join → scored fallback** | Arriving at a home that had filled up silently founded a new home on that tile, an option never scored. | The agent founds next door only if `site_score` for founding there is at least its score for staying put (always, if homeless); otherwise it re-plans. Logged as `JoinFellBackToFounding`. Removing the fallback entirely halved hamlet formation (seed 1: 4 + 2 → 2 + 2), so "their house is full, so I'll build next door" is kept as a deliberate, scored motive. |
+| **Deaths before meetings** | Agents who died in a tick could still trade and share that tick. | Deaths are processed before meetings. |
+| **Oscillation threshold** | Flagged at 6 abandonments in 24 ticks. | Flags at *more than* 6, as in Section 10. |
+| **Cap event** | `PopulationCapReached` could be skipped when a birth was blocked in the tick the cap was reached. | Always logged once, when the cap is first reached or first blocks a birth. |
+| **Trace intents** | `accrete trace` looked intents up by agent index, which shifts after deaths. | Intents are stored by agent ID (`Simulation::intent_of`). |
+| **Trade-terms docs** | Comment and A.5 said distrust changes terms by up to 40 %. | Both say 50 %, matching the code (`1 + 0.5 × trust`). Leftover placeholder lines removed. |
+
+Two unit tests in `simulation/engine.rs` cover both outcomes of the join fallback.

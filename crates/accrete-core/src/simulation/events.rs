@@ -70,6 +70,11 @@ pub enum EventKind {
     JoinedHome {
         home: HomeId,
     },
+    /// The home the agent came to join was full on arrival, and founding a new
+    /// home on the same tile scored at least as well as staying put.
+    JoinFellBackToFounding {
+        home: HomeId,
+    },
     LeftHome {
         home: HomeId,
     },

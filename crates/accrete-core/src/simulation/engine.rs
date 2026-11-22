@@ -16,7 +16,8 @@
 //!    random permutation from the `conflicts` stream, and births roll on the
 //!    `births` stream in ascending parent-ID order.
 //! 5. **Apply** — movement (integer MP), eating, resting, needs, aging,
-//!    frailty, and deaths.
+//!    frailty, and deaths; then meetings (sharing and barter) among the
+//!    survivors.
 //! 6. **Daily** (last tick of each day) — regrowth, spoilage, skill decay,
 //!    crowding, traffic decay, settlement detection, metrics.
 //! 7. Newborns join the agent list (they act from the next tick).
@@ -27,7 +28,7 @@ use crate::agents::agent::{
     Agent, AgentStats, Goal, GoalKind, PathologyState, Route, Skill, Traits,
 };
 use crate::agents::decision::{self, Candidate, Ctx, Trace, reproduce_blockers};
-use crate::agents::memory::AgentMemory;
+use crate::agents::memory::{AgentMemory, HomeSighting};
 use crate::agents::pathfinding::{AgentBelief, PathScratch};
 use crate::config::{Config, TICKS_PER_DAY, TickRates};
 use crate::geom::{Pos, is_diagonal};
@@ -86,8 +87,9 @@ pub struct Simulation {
     pub hit_cap: bool,
     /// Latest decision trace per agent (debugging; not part of the state hash).
     pub traces: BTreeMap<u32, Trace>,
-    /// Latest intent per agent, by agent index (debugging).
-    pub intents: Vec<Intent>,
+    /// Latest intent per agent as `(agent id, intent)`, sorted by id
+    /// (debugging; use `intent_of`).
+    pub intents: Vec<(u32, Intent)>,
     pub weather: WeatherState,
     pub(crate) scratch: PathScratch,
     total_births: u32,
@@ -332,21 +334,31 @@ impl Simulation {
 
         // 4. Resolve contested actions.
         self.resolve_gathering(&intents, tick);
-        let newborns = self.resolve_household(&intents, tick);
+        let (newborns, birth_blocked_by_cap) = self.resolve_household(&intents, tick);
 
         // 5. Apply individual actions and needs.
         for (i, &intent) in intents.iter().enumerate() {
             self.apply(i, intent, tick);
         }
+        // Keep this tick's intents by agent ID: deaths below shift indices.
+        let intents_by_id: Vec<(u32, Intent)> = self
+            .agents
+            .iter()
+            .map(|a| a.id)
+            .zip(intents.iter().copied())
+            .collect();
+        // Agents who died this tick are removed before meeting anyone, so the
+        // dead never trade or share knowledge.
+        self.process_deaths(tick);
         // Meetings: knowledge sharing and barter among co-located agents.
         self.meetings(tick);
-        self.process_deaths(tick);
 
         // 7. Newborns join (before daily metrics so they are counted).
         for b in newborns {
             self.agents.push(b);
         }
-        if self.agents.len() as u32 >= self.config.life.population_cap && !self.hit_cap {
+        let at_cap = self.agents.len() as u32 >= self.config.life.population_cap;
+        if (at_cap || birth_blocked_by_cap) && !self.hit_cap {
             // Reaching the safety cap flags the run: it usually means mistuning.
             self.hit_cap = true;
             self.events
@@ -363,8 +375,16 @@ impl Simulation {
                 panic!("invariant violated at tick {tick}: {e}");
             }
         }
-        self.intents = intents;
+        self.intents = intents_by_id;
         self.tick += 1;
+    }
+
+    /// The intent agent `id` acted on in the latest tick (debugging).
+    pub fn intent_of(&self, id: u32) -> Option<Intent> {
+        self.intents
+            .binary_search_by_key(&id, |&(aid, _)| aid)
+            .ok()
+            .map(|k| self.intents[k].1)
     }
 
     pub(crate) fn ctx(&self, tick: u64) -> Ctx<'_> {
@@ -456,7 +476,10 @@ impl Simulation {
             if abandoned {
                 let ps = &mut agent.pathology;
                 ps.switches.push(tick);
-                let limit = self.config.pathology.oscillation_switches as usize;
+                // Oscillating = *more than* `oscillation_switches` abandonments
+                // within the window (accrete.md, pathology detectors), so keep
+                // one more than the limit and flag when all of them fit.
+                let limit = self.config.pathology.oscillation_switches as usize + 1;
                 if ps.switches.len() > limit {
                     ps.switches.remove(0);
                 }
@@ -683,8 +706,9 @@ impl Simulation {
     }
 
     /// Chest operations, homes, storage building, and births, in a random
-    /// permutation (no ID bias). Returns newborns, ordered by parent ID.
-    fn resolve_household(&mut self, intents: &[Intent], tick: u64) -> Vec<Agent> {
+    /// permutation (no ID bias). Returns newborns, ordered by parent ID, and
+    /// whether any birth was blocked by the population cap.
+    fn resolve_household(&mut self, intents: &[Intent], tick: u64) -> (Vec<Agent>, bool) {
         let mut order: Vec<usize> = intents
             .iter()
             .enumerate()
@@ -716,6 +740,7 @@ impl Simulation {
 
         // Births: ascending parent ID (agents are stored in ID order).
         let mut newborns = Vec::new();
+        let mut blocked_by_cap = false;
         for (i, intent) in intents.iter().enumerate() {
             if *intent != Intent::Reproduce {
                 continue;
@@ -729,7 +754,8 @@ impl Simulation {
                 .is_some_and(|h| self.world.homes[h as usize].pos == self.agents[i].pos);
             let pop_now = self.agents.len() + newborns.len();
             if pop_now as u32 >= self.config.life.population_cap {
-                self.hit_cap = true;
+                // `step` flags the run and logs `PopulationCapReached`.
+                blocked_by_cap = true;
                 self.today.blocked_births += 1;
                 let a = &self.agents[i];
                 self.events.push(
@@ -754,7 +780,7 @@ impl Simulation {
             let baby = self.make_newborn(i, tick);
             newborns.push(baby);
         }
-        newborns
+        (newborns, blocked_by_cap)
     }
 
     fn do_deposit(&mut self, i: usize, tick: u64) {
@@ -882,8 +908,25 @@ impl Simulation {
                     < home.comfortable_capacity(c.homes.comfortable_capacity);
                 if room && home.pos == pos {
                     Some(h)
-                } else {
+                } else if self.founding_here_beats_staying(i, pos, tick) {
+                    // The home filled up since the agent planned to join it.
+                    // "Their house is full, so I'll build next door": found a new
+                    // home on this tile, but only because founding here scores at
+                    // least as well as staying put.
+                    self.events.push(
+                        tick,
+                        Some(aid),
+                        pos,
+                        EventKind::JoinFellBackToFounding { home: h },
+                    );
                     None
+                } else {
+                    // Founding here is worse than staying: give up this plan and
+                    // re-plan from what the agent now sees.
+                    let a = &mut self.agents[i];
+                    a.home_plan = None;
+                    a.goal = Goal::idle(a.pos, tick);
+                    return;
                 }
             }
             _ => None,
@@ -946,12 +989,27 @@ impl Simulation {
         a.memory.note_home(
             new_id,
             pos,
-            home.residents.len() as u32,
-            !home.chests.is_empty(),
+            home_sighting(&self.world, new_id, c.homes.comfortable_capacity),
             tick,
             c.memory.home_slots as usize,
         );
         a.goal = Goal::idle(a.pos, tick);
+    }
+
+    /// Fallback for a failed join: does founding a new home on `pos` score at
+    /// least as well, by the agent's own site scoring, as staying in its
+    /// current home? A homeless agent only needs `pos` to be a valid site.
+    fn founding_here_beats_staying(&self, i: usize, pos: Pos, tick: u64) -> bool {
+        let cx = self.ctx(tick);
+        let a = &self.agents[i];
+        let Some(found) = decision::site_score(a, &cx, pos, None) else {
+            return false;
+        };
+        match cx.home(a) {
+            None => true,
+            Some(h) => decision::site_score(a, &cx, h.pos, Some(decision::JoinInfo::own(h, &cx)))
+                .is_none_or(|stay| found >= stay),
+        }
     }
 
     fn leave_home(&mut self, aid: u32, h: HomeId, tick: u64) {
@@ -1102,12 +1160,10 @@ impl Simulation {
             forage_today_ticks: 0,
             last_share_tick: tick,
         };
-        let home = &self.world.homes[parent_home as usize];
         baby.memory.note_home(
             parent_home,
             home_pos,
-            home.residents.len() as u32,
-            !home.chests.is_empty(),
+            home_sighting(&self.world, parent_home, c.homes.comfortable_capacity),
             tick,
             c.memory.home_slots as usize,
         );
@@ -1888,12 +1944,10 @@ pub fn observe(a: &mut Agent, world: &World, c: &Config, r: &TickRates, tick: u6
         a.memory.learn(p);
         let t = world.tile(p);
         for &hid in world.homes_on(p) {
-            let h = &world.homes[hid as usize];
             a.memory.note_home(
                 hid,
                 p,
-                h.residents.len() as u32,
-                !h.chests.is_empty(),
+                home_sighting(world, hid, c.homes.comfortable_capacity),
                 tick,
                 home_slots,
             );
@@ -1916,6 +1970,19 @@ pub fn observe(a: &mut Agent, world: &World, c: &Config, r: &TickRates, tick: u6
     }
     a.last_observe_tick = tick;
     a.moved = false;
+}
+
+/// What an agent standing in sight of home `hid` can see of it.
+fn home_sighting(world: &World, hid: HomeId, base_capacity: u32) -> HomeSighting {
+    let h = &world.homes[hid as usize];
+    HomeSighting {
+        residents: h.residents.len() as u32,
+        has_storage: !h.chests.is_empty(),
+        comfortable: h.comfortable_capacity(base_capacity),
+        // `homes_on` is empty on worlds without a tile index (some scenarios),
+        // where every home counts as its own tile.
+        tile_homes: (world.homes_on(h.pos).len() as u32).max(1),
+    }
 }
 
 fn log_pathology(
@@ -1941,4 +2008,118 @@ fn random_choice(mut cands: Vec<Candidate>, rng: &mut Rng) -> Vec<Candidate> {
         rng.shuffle(&mut cands);
     }
     cands
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::scenario::Scenario;
+
+    fn build(toml: &str) -> Simulation {
+        let mut c = Config::default();
+        c.sim.check_invariants = true;
+        Scenario::from_toml_str(toml)
+            .expect("scenario parses")
+            .build(&c)
+            .expect("scenario builds")
+    }
+
+    fn fell_back(sim: &Simulation) -> bool {
+        sim.events
+            .events
+            .iter()
+            .any(|e| matches!(e.kind, EventKind::JoinFellBackToFounding { .. }))
+    }
+
+    /// A homeless agent arrives to join a home that is now full: founding its
+    /// own home on that tile beats having none, so it builds next door.
+    #[test]
+    fn failed_join_falls_back_to_founding_when_it_scores_well() {
+        let toml = r#"
+name = "join-fallback"
+map = """
+........
+........
+"""
+[[home]]
+at = [3, 1]
+[[agent]]
+at = [3, 1]
+home = 0
+[[agent]]
+at = [3, 1]
+home = 0
+[[agent]]
+at = [3, 1]
+home = 0
+[[agent]]
+at = [3, 1]
+home = 0
+[[agent]]
+at = [3, 1]
+knows = "all"
+"#;
+        let mut sim = build(toml);
+        let pos = Pos::new(3, 1);
+        assert_eq!(sim.world.homes[0].residents.len(), 4, "home 0 is full");
+        let i = 4;
+        assert!(sim.agents[i].home.is_none());
+
+        sim.do_establish(i, pos, Some(0), 0);
+
+        assert!(fell_back(&sim), "fallback event logged");
+        assert_eq!(sim.world.homes.len(), 2, "a new home was founded");
+        assert_eq!(sim.world.homes[1].pos, pos, "on the same tile");
+        assert_eq!(sim.agents[i].home, Some(1));
+        assert_eq!(sim.world.homes[0].residents.len(), 4, "home 0 unchanged");
+        sim.check_invariants().expect("state stays consistent");
+    }
+
+    /// An agent with a good home (storage, plains) arrives to join a home on a
+    /// mountain that is now full: founding on the mountain scores worse than
+    /// staying, so it keeps its home and re-plans.
+    #[test]
+    fn failed_join_replans_when_founding_scores_worse_than_staying() {
+        let toml = r#"
+name = "join-replan"
+map = """
+.......m
+"""
+[[home]]
+at = [7, 0]
+[[home]]
+at = [0, 0]
+chests = [10.0]
+[[agent]]
+at = [7, 0]
+home = 0
+[[agent]]
+at = [7, 0]
+home = 0
+[[agent]]
+at = [7, 0]
+home = 0
+[[agent]]
+at = [7, 0]
+home = 0
+[[agent]]
+at = [7, 0]
+home = 1
+knows = "all"
+traits = [0.5, 0.5, 0.0, 0.5]
+"#;
+        let mut sim = build(toml);
+        let pos = Pos::new(7, 0);
+        let i = 4;
+        assert_eq!(sim.agents[i].home, Some(1));
+
+        sim.do_establish(i, pos, Some(0), 0);
+
+        assert!(!fell_back(&sim), "no fallback");
+        assert_eq!(sim.world.homes.len(), 2, "nothing founded");
+        assert_eq!(sim.agents[i].home, Some(1), "kept its home");
+        assert!(sim.agents[i].home_plan.is_none(), "plan dropped to re-plan");
+        assert_eq!(sim.agents[i].goal.kind, GoalKind::Idle);
+        sim.check_invariants().expect("state stays consistent");
+    }
 }

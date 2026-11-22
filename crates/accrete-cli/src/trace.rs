@@ -55,7 +55,7 @@ pub fn trace(seed: u64, config: &Config, day: u32, ticks: u32, agents: &[u32], o
                 continue;
             };
             let a = &sim.agents[idx];
-            let intent = sim.intents.get(idx).copied();
+            let intent = sim.intent_of(id);
             let tr = sim.traces.get(&id);
             let chosen = tr.and_then(|t| t.chosen.as_ref());
             println!(

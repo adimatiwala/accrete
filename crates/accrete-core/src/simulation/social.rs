@@ -16,7 +16,7 @@
 //! Agents prefer high-score partners and demand more from low-score ones.
 
 use crate::agents::agent::Agent;
-use crate::agents::decision::{self, material_wants, reserve_target};
+use crate::agents::decision::{material_wants, reserve_target};
 use crate::geom::Pos;
 use crate::inventory::{Inventory, Resource};
 use crate::simulation::Simulation;
@@ -113,7 +113,7 @@ impl Simulation {
                     marginal(&aq.inventory, &wq, give, s) / marginal(&aq.inventory, &wq, get, s);
                 // A partner who distrusts the proposer demands better terms
                 // (the proposer receives proportionally less); trust is
-                // rewarded symmetrically, up to +/-40 %.
+                // rewarded symmetrically, up to +/-50 % (trust is in [-1, 1]).
                 let terms = 1.0 + 0.5 * trust(aq, ap.id);
                 let ratio = 0.5 * (mp + mq) * terms;
                 if !ratio.is_finite() || ratio <= 0.0 {
@@ -257,7 +257,7 @@ impl Simulation {
             return;
         }
         let (idx, idy) = (self.agents[x].id, self.agents[y].id);
-        for (from, to, to_id, from_id) in [(x, y, idy, idx), (y, x, idx, idy)] {
+        for (from, to, to_id) in [(x, y, idy), (y, x, idx)] {
             let teller = &self.agents[from];
             if teller.memory.reciprocity(to_id) < 0.0 {
                 continue; // keep quiet with someone who treated me badly
@@ -289,7 +289,6 @@ impl Simulation {
             }
             listener.stats.tips_received += learned;
             self.today.tips += learned;
-            let _ = from_id;
         }
         for (i, other) in [(x, idy), (y, idx)] {
             let a = &mut self.agents[i];
@@ -345,6 +344,5 @@ impl Simulation {
                 got_qty: got,
             },
         );
-        let _ = decision::phase;
     }
 }
