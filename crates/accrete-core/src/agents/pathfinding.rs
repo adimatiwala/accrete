@@ -5,7 +5,9 @@
 //!   orthogonal neighbours are known and passable (no corner cutting), and
 //!   costs `diagonal_num / 10` × the tile's MP.
 //! - Believed cost = terrain cost (static, known once seen) with the path
-//!   level the agent last saw on that tile.
+//!   level and route disruption the agent last saw on that tile. A blocked
+//!   tile is passable only from another blocked tile (wading out of a flood;
+//!   see `movement::entry_cost`).
 //! - Each search expands at most `astar_max_expansions` nodes.
 //! - Ties in the open list are broken by (f, h, tile index), so results are
 //!   fully deterministic.
@@ -19,8 +21,8 @@ use std::collections::BinaryHeap;
 use crate::agents::memory::AgentMemory;
 use crate::config::MovementConfig;
 use crate::geom::{DIRS8, Pos, is_diagonal};
-use crate::world::World;
-use crate::world::movement::{cost_for, step_cost};
+use crate::world::movement::{self, cost_for, step_cost};
+use crate::world::{Disruption, World};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PathError {
@@ -77,8 +79,15 @@ impl Ord for Node {
 /// Knowledge source for a search: what is known and what it costs to enter.
 pub trait Belief {
     fn knows(&self, p: Pos) -> bool;
+    /// Orthogonal MP cost to enter `p` ignoring disruptions, or `None` if
+    /// believed impassable terrain.
+    fn base_cost(&self, world: &World, p: Pos, c: &MovementConfig) -> Option<u32>;
+    fn disruption(&self, world: &World, p: Pos) -> Disruption;
     /// Orthogonal MP cost to enter `p`, or `None` if believed impassable.
-    fn cost(&self, world: &World, p: Pos, c: &MovementConfig) -> Option<u32>;
+    #[inline]
+    fn cost(&self, world: &World, p: Pos, c: &MovementConfig) -> Option<u32> {
+        movement::with_disruption(self.base_cost(world, p, c), self.disruption(world, p))
+    }
 }
 
 /// An agent's belief: its known-tile bitset and changed-tile memories.
@@ -90,12 +99,13 @@ impl Belief for AgentBelief<'_> {
         self.0.knows(p)
     }
     #[inline]
-    fn cost(&self, world: &World, p: Pos, c: &MovementConfig) -> Option<u32> {
+    fn base_cost(&self, world: &World, p: Pos, c: &MovementConfig) -> Option<u32> {
         let t = world.tile(p);
-        crate::world::movement::with_disruption(
-            cost_for(t.biome, t.is_river, self.0.believed_path(p), c),
-            self.0.believed_disruption(p),
-        )
+        cost_for(t.biome, t.is_river, self.0.believed_path(p), c)
+    }
+    #[inline]
+    fn disruption(&self, _world: &World, p: Pos) -> Disruption {
+        self.0.believed_disruption(p)
     }
 }
 
@@ -108,8 +118,12 @@ impl Belief for Omniscient {
         true
     }
     #[inline]
-    fn cost(&self, world: &World, p: Pos, c: &MovementConfig) -> Option<u32> {
-        world.enter_cost(p, c)
+    fn base_cost(&self, world: &World, p: Pos, c: &MovementConfig) -> Option<u32> {
+        movement::enter_cost(world.tile(p), c)
+    }
+    #[inline]
+    fn disruption(&self, world: &World, p: Pos) -> Disruption {
+        world.disruption(p)
     }
 }
 
@@ -197,19 +211,27 @@ impl PathScratch {
             }
             let p = dims.pos(node.idx);
             let gp = self.g[i];
+            let from = belief.disruption(world, p);
+            let entry = |r: Pos| {
+                movement::entry_cost(
+                    belief.base_cost(world, r, c),
+                    from,
+                    belief.disruption(world, r),
+                )
+            };
             for &(dx, dy) in &DIRS8 {
                 let q = p.offset(dx, dy);
                 if !dims.contains(q) || !belief.knows(q) {
                     continue;
                 }
-                let Some(tc) = belief.cost(world, q, c) else {
+                let Some(tc) = entry(q) else {
                     continue;
                 };
                 let diag = is_diagonal(dx, dy);
                 if diag {
                     let a = p.offset(dx, 0);
                     let b = p.offset(0, dy);
-                    let ok = |r: Pos| belief.knows(r) && belief.cost(world, r, c).is_some();
+                    let ok = |r: Pos| belief.knows(r) && entry(r).is_some();
                     if !ok(a) || !ok(b) {
                         continue;
                     }

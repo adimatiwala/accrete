@@ -193,8 +193,9 @@ fn branches_from_one_snapshot_diverge_only_by_the_intervention() {
     );
 }
 
-/// Residents outside a flooded home do not re-plan the same failing route
-/// every tick: a target that could not be reached waits out its cooldown.
+/// A flood over a home: residents do not re-plan the same failing route every
+/// tick (a target that could not be reached waits out its cooldown), and
+/// agents caught inside the flood wade out.
 #[test]
 fn flooded_home_is_not_retried_every_tick() {
     use accrete_core::config::{DisruptionKind, ScriptedDisruption};
@@ -219,17 +220,35 @@ fn flooded_home_is_not_retried_every_tick() {
         busiest_tiles: 0,
     });
     sim.set_config(cfg).expect("valid intervention");
-    sim.run(10 * TICKS_PER_DAY);
+    sim.run(TICKS_PER_DAY);
+    use accrete_core::world::Disruption;
+    let caught: Vec<u32> = sim
+        .agents
+        .iter()
+        .filter(|a| sim.world.disruption(a.pos) == Disruption::Blocked)
+        .map(|a| a.id)
+        .collect();
+    sim.run(2 * TICKS_PER_DAY);
+    // Agents caught inside wade out; any still inside chose to stay put.
+    let mut waded_out = 0;
+    for a in caught.iter().filter_map(|&id| sim.agent(id)) {
+        if sim.world.disruption(a.pos) == Disruption::Blocked {
+            assert_eq!(a.goal.target, a.pos, "agent {} is stuck in the flood", a.id);
+        } else {
+            waded_out += 1;
+        }
+    }
+    assert!(
+        !caught.is_empty() && waded_out > 0,
+        "caught {caught:?}, {waded_out} left"
+    );
+    sim.run(7 * TICKS_PER_DAY);
 
     let cooldown = u64::from(c.memory.unreachable_cooldown_ticks);
     let mut last = std::collections::BTreeMap::new();
     let mut failures = 0;
     for e in &sim.events.events {
         if let (Some(id), EventKind::RouteFailed { target }) = (e.agent, &e.kind) {
-            // Agents caught inside the flood cannot reach anything; see A.15.
-            if e.pos.dist2(home) <= 9 {
-                continue;
-            }
             failures += 1;
             if let Some(prev) = last.insert((id, *target), e.tick) {
                 assert!(
@@ -280,12 +299,18 @@ fn route_disruption_blocks_busy_trails_then_restores_them() {
             cut.agents.iter().map(|a| (a.id, a.pos)).collect();
         cut.step();
         control.step();
+        // Disruptions change only in the daily phase, at the end of a day's
+        // last tick; on other ticks the blocked tiles are the same before and
+        // after the step.
+        let daily_ran = cut.tick % TICKS_PER_DAY == 0;
+        let blocked = |p| cut.world.disruption(p) == Disruption::Blocked;
         for a in &cut.agents {
-            if cut.world.disruption(a.pos) != Disruption::Blocked {
+            if !blocked(a.pos) {
                 continue;
             }
+            *caught.entry(a.id).or_insert(0u64) += 1;
             match before.get(&a.id) {
-                Some(&p) if p == a.pos => *caught.entry(a.id).or_insert(0u64) += 1,
+                Some(&p) if p == a.pos || daily_ran || blocked(p) => {}
                 _ => panic!("agent {} stepped onto blocked tile {:?}", a.id, a.pos),
             }
         }

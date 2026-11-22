@@ -246,6 +246,53 @@ mod tests {
         assert_eq!(state.history.len(), 2);
     }
 
+    /// A search from inside a blocked area wades out; one from outside never
+    /// enters it, and a blocked goal is never reachable.
+    #[test]
+    fn searches_wade_out_of_a_flood_but_never_in() {
+        use crate::agents::pathfinding::{Omniscient, PathError, PathScratch};
+        let c = Config::default();
+        let mut world = crate::world::generate_world(1, &c);
+        let p = world.spawns[0];
+        let mut state = DisruptionState::default();
+        state.update(3, &mut world, &[disc([p.x, p.y], 2)]);
+        let blocked = |w: &World, q: Pos| w.disruption(q) == Disruption::Blocked;
+        let outside = (5..12)
+            .flat_map(|d| {
+                [
+                    Pos::new(p.x + d, p.y),
+                    Pos::new(p.x - d, p.y),
+                    Pos::new(p.x, p.y + d),
+                ]
+            })
+            .find(|&q| world.contains(q) && world.enter_cost(q, &c.movement).is_some())
+            .expect("open land near the spawn");
+        let mut scratch = PathScratch::default();
+        let mv = &c.movement;
+        let out = scratch
+            .find_path(&world, &Omniscient, p, outside, mv, mv.astar_max_expansions)
+            .expect("wades out");
+        let first_open = out.steps.iter().position(|&q| !blocked(&world, q)).unwrap();
+        assert!(
+            out.steps[first_open..].iter().all(|&q| !blocked(&world, q)),
+            "re-entered the flood"
+        );
+        assert_eq!(
+            scratch
+                .find_path(&world, &Omniscient, outside, p, mv, mv.astar_max_expansions)
+                .unwrap_err(),
+            PathError::BadGoal
+        );
+        let [deeper, edge, open] = [1, 2, 3].map(|d| Pos::new(p.x + d, p.y));
+        if blocked(&world, deeper) && blocked(&world, edge) && !blocked(&world, open) {
+            assert!(world.step_in_cost(open, edge, mv).is_none(), "waded in");
+            assert!(
+                world.step_in_cost(deeper, edge, mv).is_some(),
+                "cannot wade"
+            );
+        }
+    }
+
     #[test]
     fn huge_radius_is_clamped_to_the_map() {
         let c = Config::default();

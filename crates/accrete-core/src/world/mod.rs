@@ -304,6 +304,21 @@ impl World {
         movement::with_disruption(movement::enter_cost(self.tile(p), c), self.disruption(p))
     }
 
+    /// Orthogonal MP to step from `from` into its neighbour `to`; unlike
+    /// `enter_cost`, this lets an agent standing in a blocked area wade out.
+    pub fn step_in_cost(
+        &self,
+        from: Pos,
+        to: Pos,
+        c: &crate::config::MovementConfig,
+    ) -> Option<u32> {
+        movement::entry_cost(
+            movement::enter_cost(self.tile(to), c),
+            self.disruption(from),
+            self.disruption(to),
+        )
+    }
+
     pub fn pile_at(&self, p: Pos) -> Option<&Pile> {
         self.piles.iter().find(|pl| pl.pos == p)
     }

@@ -571,7 +571,7 @@ impl Simulation {
             let next_ok = r
                 .remaining()
                 .first()
-                .is_some_and(|&p| self.world.enter_cost(p, mc).is_some());
+                .is_some_and(|&p| self.world.step_in_cost(agent.pos, p, mc).is_some());
             // A stale but valid route is re-planned: the agent may know a better way now.
             if r.target == target && !r.done() && next_ok && fresh {
                 return true;
@@ -1212,7 +1212,7 @@ impl Simulation {
                 let mut moved_any = false;
                 if let Some(route) = a.route.as_mut() {
                     while let Some(&next) = route.remaining().first() {
-                        let Some(cost) = world.enter_cost(next, &c.movement) else {
+                        let Some(cost) = world.step_in_cost(a.pos, next, &c.movement) else {
                             // Blocked (e.g. a route disruption the agent had
                             // not seen): it now knows, and re-plans.
                             a.memory.note_changed(
