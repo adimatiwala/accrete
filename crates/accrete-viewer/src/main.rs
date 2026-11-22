@@ -177,7 +177,9 @@ struct Branch {
     viewing_intervention: bool,
     intervention: usize,
     from_day: u32,
-    from_tick: u64,
+    /// Next agent id at the split: agents with `id < from_next_id` exist on
+    /// both sides with the same identity; later ids are branch-local newborns.
+    from_next_id: u32,
 }
 
 struct App {
@@ -237,13 +239,7 @@ impl App {
     fn from_snapshot(path: &std::path::Path) -> Result<Self, String> {
         let sim = Simulation::load_snapshot(path)?;
         let mut app = App::new(sim.world.seed, sim.config.clone());
-        app.seed = sim.world.seed;
-        app.config = sim.config.clone();
-        // A new world (G/S) keeps the settings but not interventions pinned
-        // to this world's days and tiles.
-        app.config.weather.scripted.clear();
-        app.config.disruption.scripted.clear();
-        app.sim = sim;
+        app.apply_loaded_sim(sim);
         app.last_snapshot = Some(path.to_path_buf());
         app.refresh_texture();
         app.fit();
@@ -302,7 +298,7 @@ impl App {
                 } else {
                     ""
                 };
-                self.sim = sim;
+                self.apply_loaded_sim(sim);
                 self.branch = None;
                 self.keep_selection_if_present();
                 self.refresh_texture();
@@ -314,6 +310,16 @@ impl App {
             }
             Err(e) => self.say(format!("load failed: {e}")),
         }
+    }
+
+    /// Mirror `from_snapshot`: G/S must not replay scripted interventions
+    /// pinned to this world's days and tiles.
+    fn apply_loaded_sim(&mut self, sim: Simulation) {
+        self.seed = sim.world.seed;
+        self.config = sim.config.clone();
+        self.config.weather.scripted.clear();
+        self.config.disruption.scripted.clear();
+        self.sim = sim;
     }
 
     /// Branch from the current state: the simulation on screen becomes the
@@ -334,13 +340,14 @@ impl App {
             return Err(e);
         }
         // Show the intervention; the control keeps running alongside.
+        let from_next_id = self.sim.next_id;
         let control = std::mem::replace(&mut self.sim, intervention);
         self.branch = Some(Branch {
             other: control,
             viewing_intervention: true,
             intervention: self.intervention,
             from_day: day,
-            from_tick: self.sim.tick,
+            from_next_id,
         });
         self.refresh_texture();
         self.say(format!(
@@ -363,12 +370,13 @@ impl App {
 
     /// Each branch numbers its own newborns, so an agent id from one
     /// simulation may be someone else, or no one, in the other. Keep the
-    /// selection only for agents that existed before the simulations split.
+    /// selection only for agents that existed before the simulations split
+    /// (`id < from_next_id`).
     fn keep_selection_if_present(&mut self) {
         if let Selection::Agent(id) = self.selection {
-            let split = self.branch.as_ref().map(|b| b.from_tick);
-            let born_before_split = |a: &Agent| split.is_none_or(|t| a.born_tick < t);
-            if !self.sim.agent(id).is_some_and(born_before_split) {
+            let split = self.branch.as_ref().map(|b| b.from_next_id);
+            let same_person = split.is_none_or(|n| id < n);
+            if !(same_person && self.sim.agent(id).is_some()) {
                 self.selection = Selection::None;
                 self.follow = false;
             }
@@ -1336,7 +1344,7 @@ async fn main() {
     if target > app.sim.tick {
         app.sim.run(target - app.sim.tick);
         app.refresh_texture();
-    } else if args.load.is_some() && args.day > 0 {
+    } else if args.load.is_some() && target < app.sim.tick {
         eprintln!(
             "warning: the snapshot is already at day {}, past --day {}",
             app.sim.day(),
