@@ -1344,7 +1344,7 @@ async fn main() {
     if target > app.sim.tick {
         app.sim.run(target - app.sim.tick);
         app.refresh_texture();
-    } else if args.load.is_some() && target < app.sim.tick {
+    } else if args.load.is_some() && args.day > 0 && target < app.sim.tick {
         eprintln!(
             "warning: the snapshot is already at day {}, past --day {}",
             app.sim.day(),
