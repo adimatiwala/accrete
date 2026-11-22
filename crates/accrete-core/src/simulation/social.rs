@@ -25,14 +25,14 @@ use crate::simulation::events::EventKind;
 /// Per-agent view used for valuing trades.
 #[derive(Clone, Copy, Debug)]
 struct Wants {
-    want: [f32; 3],
-    weight: [f32; 3],
+    want: [f32; 4],
+    weight: [f32; 4],
     capacity: f32,
 }
 
 fn utility(inv: &Inventory, w: &Wants, surplus: f32) -> f32 {
     let mut u = 0.0;
-    for r in Resource::ALL {
+    for r in Resource::GOODS {
         let x = inv.get(r);
         let d = w.want[r.index()];
         u += w.weight[r.index()] * x.min(d) + surplus * (x - d).max(0.0);
@@ -66,11 +66,21 @@ impl Simulation {
         let (wood, stone) = material_wants(a, &cx);
         let sc = &self.config.social;
         Wants {
-            want: [reserve_target(a, &cx), wood, stone],
+            want: [
+                reserve_target(a, &cx),
+                wood,
+                stone,
+                if self.config.tools.enabled && !a.is_juvenile(&self.rates) {
+                    self.config.tools.wanted
+                } else {
+                    0.0
+                },
+            ],
             weight: [
                 sc.food_value * (1.0 + a.hunger),
                 sc.material_value,
                 sc.material_value,
+                sc.tool_value,
             ],
             capacity: a.carry_capacity(&self.config, &self.rates),
         }
@@ -100,8 +110,8 @@ impl Simulation {
         let need_q = sc.trade_min_gain * (1.0 - 0.5 * trust(aq, ap.id));
         let mut best: Option<TradeOffer> = None;
         const QTY: [f32; 10] = [1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 10.0, 12.0, 16.0, 20.0];
-        for give in Resource::ALL {
-            for get in Resource::ALL {
+        for give in Resource::GOODS {
+            for get in Resource::GOODS {
                 if give == get || ap.inventory.get(give) < 1.0 || aq.inventory.get(get) < 1.0 {
                     continue;
                 }
@@ -259,6 +269,9 @@ impl Simulation {
         let (idx, idy) = (self.agents[x].id, self.agents[y].id);
         for (from, to, to_id) in [(x, y, idy), (y, x, idx)] {
             let teller = &self.agents[from];
+            let teller_price = teller.memory.tool_price;
+            let teller_traits = teller.traits;
+            let teller_return = teller.forage_rate;
             if teller.memory.reciprocity(to_id) < 0.0 {
                 continue; // keep quiet with someone who treated me badly
             }
@@ -288,6 +301,31 @@ impl Simulation {
                 }
             }
             listener.stats.tips_received += learned;
+            // Payoff-biased social learning (A.27): copy a little from someone
+            // who says foraging goes better for them.
+            if self.config.culture.enabled && teller_return > listener.forage_rate {
+                let gap = ((teller_return - listener.forage_rate) / listener.forage_rate.max(1e-3))
+                    .min(1.0);
+                let k = self.config.culture.rate * gap * (0.5 + 0.5 * listener.traits.sociability);
+                let t = &mut listener.traits;
+                t.curiosity += k * (teller_traits.curiosity - t.curiosity);
+                t.caution += k * (teller_traits.caution - t.caution);
+                t.sociability += k * (teller_traits.sociability - t.sociability);
+                t.diligence += k * (teller_traits.diligence - t.diligence);
+                *t = t.clamped();
+                self.today.trait_copies += 1;
+            }
+            // Talk turns to prices: the listener moves toward the teller's
+            // believed exchange rate (A.26).
+            if teller_price > 0.0 && self.config.tools.enabled {
+                let g = self.config.tools.price_gossip;
+                let m = &mut listener.memory;
+                m.tool_price = if m.tool_price > 0.0 {
+                    m.tool_price + g * (teller_price - m.tool_price)
+                } else {
+                    teller_price
+                };
+            }
             self.today.tips += learned;
         }
         for (i, other) in [(x, idy), (y, idx)] {
@@ -301,12 +339,37 @@ impl Simulation {
         let sc = self.config.social.clone();
         let slots = sc.social_slots as usize;
         let (idp, idq) = (self.agents[p].id, self.agents[q].id);
+        let (hp, hq) = (self.agents[p].home, self.agents[q].home);
+        self.trade_log
+            .push(crate::simulation::emergence::TradeRecord {
+                tick,
+                a: idp,
+                b: idq,
+                cross_household: hp.is_none() || hp != hq,
+            });
         let given = self.agents[p].inventory.take(o.give, o.give_qty);
         self.agents[q].inventory.put(o.give, given);
         let got = self.agents[q].inventory.take(o.get, o.get_qty);
         self.agents[p].inventory.put(o.get, got);
         self.ledger.transferred[o.give.index()] += f64::from(given);
         self.ledger.transferred[o.get.index()] += f64::from(got);
+        // Each side learns the exchange rate it just experienced (A.26).
+        let rate = match (o.give, o.get) {
+            (Resource::Tools, Resource::Food) if given > 0.0 => Some(got / given),
+            (Resource::Food, Resource::Tools) if got > 0.0 => Some(given / got),
+            _ => None,
+        };
+        if let Some(rate) = rate {
+            let lr = self.config.tools.price_learning;
+            for k in [p, q] {
+                let m = &mut self.agents[k].memory;
+                m.tool_price = if m.tool_price > 0.0 {
+                    m.tool_price + lr * (rate - m.tool_price)
+                } else {
+                    rate
+                };
+            }
+        }
         let total = (o.gain_proposer + o.gain_partner).max(1e-6);
         // Each side rates the other by the other's share of the total gain.
         for (me, other, other_share) in [

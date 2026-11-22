@@ -96,6 +96,11 @@ pub struct AgentSpec {
     pub wood: f32,
     #[serde(default)]
     pub stone: f32,
+    #[serde(default)]
+    pub tools: f32,
+    /// Crafting aptitude (default: the founder's hashed aptitude).
+    #[serde(default)]
+    pub craft_aptitude: Option<f32>,
     /// Frequent-tile memory: `[x, y, crossings]` entries.
     #[serde(default)]
     pub crossings: Vec<[f32; 3]>,
@@ -264,7 +269,11 @@ impl Scenario {
                 food: spec.food,
                 wood: spec.wood,
                 stone: spec.stone,
+                tools: spec.tools,
             };
+            if let Some(apt) = spec.craft_aptitude {
+                a.craft.aptitude = apt;
+            }
             a.age_ticks = (spec.age_days * ticks_per_day) as u64;
             let t = spec.traits.unwrap_or([0.5; 4]);
             a.traits = Traits {

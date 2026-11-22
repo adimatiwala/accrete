@@ -1485,3 +1485,190 @@ It also covers:
 * **Agriculture is deferred** until the current regimes are mapped, so its effect can be measured against a known baseline.
 
 **Verification:** documentation only; no code or results changed.
+
+### A.24 Observatory metrics (research program §4)
+
+These are measurement-only metrics for the hypotheses in `docs/research/PROGRAM.md`. Agents never read them.
+
+| Metric (`DailyMetrics` column) | Definition |
+|---|---|
+| `wealth_gini` | Gini of household wealth: goods held by residents plus the home's chests, in weight units, over occupied homes |
+| `largest_cluster_share`, `clusters_2plus` | Home clusters by single linkage at the settlement radius (candidates included): the largest cluster's share of the homed population, and the number of clusters with ≥ 2 homes |
+| `mean_move_distance` | Mean Chebyshev distance of the day's home moves |
+| `trade_pairs_30d`, `trade_mean_degree`, `trade_degree_gini`, `trade_cross_household_share`, `trade_repeat_share` | The barter network over the last 30 days: distinct pairs, mean partners per trader, Gini of partner counts, share of trades between different homes, share of trades with a repeat partner |
+| `moran_curiosity` … `moran_diligence` | Global Moran's I of each trait over occupied homes (a home's value is its residents' mean), with weights `1/(1 + d)` within 8 tiles. 0 when undefined |
+
+New suite and sweep outcomes (`experiments::OUTCOMES`):
+* `wealth_gini`, `largest_cluster_share`;
+* `rank_size_zeta`: minus the OLS slope of ln(size) on ln(rank), over clusters with ≥ 2 homes. It is computed in the CLI, because logarithms are banned in core; NaN below three clusters;
+* `moves_per_person_year`: run-total home moves per person-year;
+* `trade_pairs_30d`, `trade_degree_gini`, `trade_cross_household_share`;
+* `moran_caution`, `moran_sociability`.
+
+**Decisions:**
+* **The trade log stays out of the state hash.** It is a bounded `Vec<TradeRecord>` (the last 30 days, pruned daily) appended on each barter. Agents never read it. It is saved in snapshots (`SNAPSHOT_FORMAT` 3 → 4) so resumed runs measure identically, but it is not hashed. Every golden *state* hash is therefore unchanged, which proves the PR changes no behaviour; only `snapshot_seed1_t100` (file bytes) was re-blessed for the format bump.
+* **Clusters for ζ include candidates.** Confirmed hamlets are too few (0–3 per seed) to fit a rank-size line.
+* **Moran's I weights:** an inverse-distance kernel capped at 8 tiles, roughly a foraging range, so neighbouring hamlets count but the far side of the map does not.
+
+**First measurements** (seeds 1–3, 200 days, `experiments --only trade`; paired differences with 95 % CIs):
+* **Barter has no economic role yet.** Turning trade off leaves population (+20 [−17, 57]), clustering R (−0.006 [−0.09, 0.08]), wealth Gini (−0.013 [−0.09, 0.07]), foraging radius and migration unchanged within noise. The control's network is small and sparse: 24 pairs in 30 days, about half of them between households. This supports H2's premise: there are no gains from trade to exploit yet.
+* **Trait geography without culture.** Moran's I is already 0.55 (caution) and 0.37 (sociability) with no social learning. Kin budding (children settle within 3 tiles of their birth home) plus inheritance (traits ± 0.1) produce spatially autocorrelated "family character". `PROGRAM.md` H5 was revised accordingly: learning must raise Moran's I above this kinship baseline.
+* **Settlement sizes are flat:** ζ ≈ 0.4, and the largest cluster holds about 5 % of the homed population. There is no primate settlement yet, which bears on H7.
+
+**Verification:**
+* Unit tests for the Gini (known values) and the trade-network statistics (pairs, degrees, repeats, window).
+* The full release suite passes, with every golden state hash unchanged.
+* The debug suite passes.
+* The demo was reproduced with `--jobs 3`.
+
+### A.25 Sobol' global sensitivity analysis (A.10; research program §5)
+
+`accrete sweep --sobol N` adds a third design to the sweep, after grid and Latin hypercube. It answers **"which knobs matter for which emergent structure"**: the parameter-to-behaviour map asked for in A.10.
+
+| Piece | What and why |
+|---|---|
+| **Design** | A Saltelli design: a Sobol' low-discrepancy sequence (Joe–Kuo direction numbers, up to 21 dimensions, so 10 parameters) gives `A` and `B` (`N × k`). Each row adds the `k` hybrids `AB^(i)`, for `N(k + 2)` points laid out row by row. Integer keys map onto their integer range exactly as in the Latin hypercube. |
+| **Estimators** | First order: Saltelli et al. (2010). Total order: Jansen (1999). Both are computed on per-point means over seeds. |
+| **Uncertainty** | 95 % percentile bootstrap (1,000 resamples of the `N` rows, from the `Design` stream at `--design-seed`). |
+| **Stochastic model** | `noise_share` = the mean within-point variance of the seed-mean divided by the output variance. An index is only meaningful where the noise share is small. Without this, any index on a stochastic simulator is uninterpretable. |
+| **Reuse** | Validation, parallel execution (`--jobs`-independent outputs), manifests and the run index are the sweep's, unchanged. The output is `sobol_indices.csv`, and the largest total index per outcome is printed. |
+
+**Validation:** the Sobol' sequence fills every one of 64 strata exactly once in all 21 dimensions. On the Sobol' g-function (`a = 0, 1, 9, 99`; N = 4,096) the estimated first-order and total indices are within 0.03 of the analytic values. Undefined outputs are refused per outcome.
+
+**Pilot study** (E1/E4 scope): k = 6 parameters, N = 32, seeds 1–2, 200 days, 512 runs. The parameters were `resources.food_regrowth` 0.04–0.2, `decision.social_weight` 0–0.8, `decision.kin_weight` 0–0.6, `homes.site_food_per_person` 3–8, `infrastructure.household_weight` 0–1, and `life.reproduce_chance` 0.15–0.5. Total-order indices (95 % CI):
+
+| Outcome | regrowth | site food | reproduce chance | social | kin | household | noise share |
+|---|---|---|---|---|---|---|---|
+| population | 0.64 [0.41, 0.98] | 0.23 [0.15, 0.39] | 0.07 [0.03, 0.15] | 0.00 [0.00, 0.01] | 0.01 [0.01, 0.02] | 0.00 | 0.02 |
+| clustering R | 0.75 [0.47, 1.13] | 0.22 [0.13, 0.36] | 0.02 | **0.02 [0.01, 0.03]** | **0.03 [0.01, 0.06]** | 0.01 | 0.08 |
+| hamlets | 0.51 [0.19, 1.60] | 0.50 [0.21, 1.22] | 0.25 [0.05, 0.84] | 0.09 [0.02, 0.35] | 0.04 [0.01, 0.14] | 0.04 | 0.11 |
+
+**Findings** (pilot; total indices are well determined, first-order ones are not at N = 32):
+1. **Aggregation is ecologically, not socially, determined.** Clustering and population are governed by food productivity and the agents' land-perception threshold. The two motives added to *produce* aggregation (sociability and kin ties) explain at most about 6 % of the variance in clustering, even across their whole range. Kin hamlets exist (A.9), but whether homes cluster at all is set by local surplus. This sharpens H1, and it is the strongest evidence yet that structure in this model comes from the economy of food rather than from social preference.
+2. **Hamlet formation is interactive.** ST far exceeds S1 for regrowth (0.51 vs 0.18) and site food. Hamlets need surplus *and* permissive land perception together, consistent with a threshold (H1 predicts a phase transition; E1's grid will locate it).
+3. **Household concern does not matter for any structural outcome** (ST ≤ 0.04). Road tiles are almost pure noise (noise share 0.86), as expected given that roads barely form (A.9).
+4. **Noise limits some metrics.** Foraging radius (0.74), largest-cluster share (0.66) and Moran's I (0.49) are dominated by seed noise at 2 seeds; their indices are not interpreted.
+
+**Next:** N ≥ 128 with 5 seeds for the headline outcomes, so first-order indices separate from interactions; and the E1 regrowth × land-threshold grid to map the transition.
+
+### A.26 Tools and crafting: a production chain with learned prices (research program §7.1, H2)
+
+**Mechanism** (all individual motives, default off: `tools.enabled = false`):
+
+| Piece | Rule |
+|---|---|
+| **Good** | `Resource::Tools`: a durable, crafted good with weight 2. It lives only in inventories, chests and piles, never on tiles. `Resource::ALL` stays the three natural resources; `Resource::GOODS` adds tools for inventory-level code. |
+| **Use** | A tool in hand multiplies the gathering rate of every resource by `gather_bonus` (1.5) and wears `1 / durability_ticks` (1/48) per productive gathering tick. Wear is recorded as `construction` in the ledger's tools column. |
+| **Craft** | `GoalKind::Craft` at home (or where a homeless agent stands) turns `craft_wood` (2) + `craft_stone` (1) into `output_per_batch × crafting skill` tools over `craft_ticks` (4). Crafted tools are recorded as `regrown`. The crafting skill is aptitude plus practice, like gathering: practice rises with crafting and decays when unused. |
+| **Motive to craft** | An adult crafts when it lacks a tool, or when it believes one batch would fetch at least `surplus_threshold_food` (4) in exchange. The value of tools to trade is the believed price × surplus / reserve. Inputs come into the material plan only then. |
+| **Prices** | Each agent keeps `memory.tool_price` (food per tool). It updates from its own tool-for-food trades (learning rate 0.3) and moves toward a conversation partner's belief (gossip 0.2). Before any experience it assumes the prior (3). Barter values tools by need (`social.tool_value` = 2 per tool below the one wanted). |
+
+**Decisions:**
+* **Aptitude from a stateless hash.** A founder's crafting aptitude comes from `hash::mix_words(seed, id, …)`, not a new RNG draw, which would shift every later founder draw and change runs with tools off.
+* **Inertness proven.** With tools disabled, all 87 pre-existing metric columns are bit-identical to the previous build over 120 days (seed 1). Golden hashes changed only through the config digest and new hashed fields: inventory tools, crafting skill, price belief. `SNAPSHOT_FORMAT` 5.
+* **Prices from local experience only.** No agent ever sees a market. A common price, if one forms, is emergent.
+
+**Tests:**
+* An agent without a tool crafts one, consuming the inputs and gaining practice.
+* Crafting never happens when tools are disabled.
+* A tool holder gathers more than 1.3× a matched forager, and its tool wears.
+* `--check` conservation holds every tick over 60 days with tools on.
+* All 18 scenarios and the full release suite pass.
+
+**E2 results** (`sweep --param tools.enabled=false,true --param social.trade_enabled=false,true --param resources.food_regrowth=0.06,0.15 --seed 1-5 --days 300`; mean [95 % CI]):
+
+| tools | trade | food | trades (run) | trade pairs, 30 d | specialisation | wealth Gini | tool holders | price CV |
+|---|---|---|---|---|---|---|---|---|
+| off | on | 0.15 | 431 [319, 543] | 32.6 | 0.0008 | 0.33 [0.31, 0.35] | – | – |
+| on | on | 0.15 | **4,281 [3,160, 5,410]** | **374** | 0.029 [0.024, 0.033] | **0.39 [0.37, 0.41]** | 0.46 | 0.36 |
+| on | off | 0.15 | 0 | 0 | 0.029 [0.023, 0.034] | 0.37 [0.33, 0.40] | 0.31 | – |
+| off | on | 0.06 | 79 [52, 107] | 3.8 | 0.0002 | 0.31 | – | – |
+| on | on | 0.06 | **779 [602, 956]** | **40** | 0.025 | 0.32 | 0.41 | 0.36 |
+
+**Findings against H2:**
+1. **Exchange networks: supported.** With tools, barter rises about 10× at both food levels (H2 predicted ≥ 5×), and the network grows from about 33 to 374 distinct pairs a month. For the first time trade has gains to exploit, and agents find them.
+2. **Inequality emerges from the production chain.** Household wealth Gini rises from 0.33 to 0.39 (non-overlapping CIs) with tools and trade. Tools alone already raise it to 0.37.
+3. **A loosely converging market.** Price beliefs disperse with CV ≈ 0.36 under trade: neither a single price nor independent guesses.
+4. **Division of labour: not supported.** Specialisation rises about 30× but only to 0.03 (H2 predicted > 0.1). Crafters stay under 1 % of adults, and **turning trade off does not lower specialisation** (0.029 either way). Agents craft their own tools and trade spares. They do not become specialists.
+5. **Population is unaffected** (food, not productivity, is what binds). Starvation deaths with tools but without trade (about 2 per run) have CIs that include 0 and are not claimed.
+
+**Why there are no specialists** (a hypothesis for the next experiment, not a fitted result): one batch makes about one tool, which lasts about 48 productive ticks, so each adult needs a new tool only every couple of weeks, and making it costs only a few ticks once materials are in hand. Self-supply is cheap relative to finding a seller among the few co-located agents. Specialisation should appear when **(a)** crafting has strong increasing returns (practice raising output well beyond aptitude) or **(b)** stone is scarce and localised, so that most agents cannot self-supply. Both are single-parameter interventions (`tools.practice_per_tick`, `skills.practice_max`, `resources.stone_threshold`) for the next sweep, and are the natural follow-up to H2.
+
+### A.27 Payoff-biased social learning (research program §7.2, H5)
+
+**Mechanism** (default off: `culture.enabled = false`). In the same meeting where two agents share food locations, each mentions its experienced foraging return. A listener whose partner does better moves each personality trait toward the partner's by
+
+```
+rate × min(1, (partner return − own return) / own return) × (0.5 + 0.5 × own sociability)
+```
+
+with `rate` = 0.05. Traits stay in [0, 1]. Genetic inheritance is unchanged. Learning is lifelong and local.
+
+**Decisions:**
+* **The payoff is what agents can actually tell each other:** the experienced return, already a local, per-agent quantity. No agent sees anyone's traits except a conversation partner's.
+* **No randomness.** With culture disabled, all 94 prior metric columns are bit-identical to the tools build over 120 days (seed 2). `SNAPSHOT_FORMAT` 6, because `DailyMetrics` gained the trait-mean and learning-count columns.
+
+**Tests:** in a two-agent scenario the worse forager's traits move toward the better forager's, the better forager does not change, and learning events are counted; nothing changes when culture is disabled.
+
+**E5 results** (`experiments --only culture --seed 1-5 --days 300`, random droughts on; paired differences, culture minus control, 95 % CI):
+
+| Outcome | Control | Culture | Difference |
+|---|---|---|---|
+| Moran's I, caution | 0.683 | 0.686 | +0.002 [−0.144, +0.149] |
+| Moran's I, sociability | 0.359 | 0.335 | −0.024 [−0.127, +0.079] |
+| Moran's I, curiosity | 0.570 | 0.601 | +0.030 [−0.054, +0.115] |
+| Moran's I, diligence | 0.550 | 0.650 | +0.099 [−0.156, +0.355] |
+| Mean caution | 0.457 | 0.478 | +0.022 [−0.031, +0.074] |
+| Hamlets (exploratory) | 2.2 | 3.0 | **+0.8 [+0.25, +1.36]**, higher on 4 of 5 seeds |
+| Population | 476 | 463 | −13 [−42, +16] |
+
+The learning dose is large: about 27,000 copying events per run, 0.27 per person-day.
+
+**Findings:**
+1. **H5 is not supported.** Despite heavy learning, trait geography does not rise above the kinship baseline (every Moran's I CI spans 0), and trait means do not shift.
+2. **Why: payoffs are not trait-driven.** An agent's foraging return depends mostly on *where* it lives (land and neighbours, A.25: regrowth dominates every outcome), not on its traits. Payoff-biased copying therefore copies luck, and the traits it spreads are close to selectively neutral. Cultural-evolution theory (Boyd & Richerson) predicts exactly this: payoff-biased transmission only builds adaptive culture when payoffs depend on the transmitted behaviour. The model's null is a correct reproduction of that requirement, not a failure.
+3. **An unexpected exploratory effect:** culture increased hamlets (+0.8, 4/4 seeds with a change, CI excluding 0) without changing clustering R or population. It was not the primary outcome, and it is recorded for replication (10 seeds, 600 days) before any claim. One candidate mechanism is that copying a better forager's caution and diligence makes households more stable.
+
+**Next:** make payoffs trait-sensitive, then repeat E5. For example, run under tools (diligence changes crafting output) or under droughts concentrated in one region (caution pays where food fails).
+
+### A.28 Viewer story mode: making emergence legible to newcomers
+
+The viewer showed coloured dots keyed to internal goal ids, which means nothing to a first-time viewer. A new presentation module, `crates/accrete-viewer/src/story.rs`, reads the simulation and its event log and **never changes them** (no determinism impact; core untouched).
+
+| Feature | What it shows |
+|---|---|
+| **Names** | Stable, pronounceable names for people (hash of seed and id) and settlements (stem plus a terrain suffix: -ford by rivers, -wood, -hill, -crag, -field). |
+| **Roles** | People are coloured by what they are doing in plain words (gathering food, building, crafting, exploring, moving house, starting a family, resting), with an on-map legend. Elders get a ring; children are smaller; at high zoom a dot shows what someone carries. |
+| **Motion** | Movement is interpolated between ticks, with fading motion trails. |
+| **Effects** | Trade arcs between partners, pulses for births and deaths, rings for new homes, storage and crafted tools. |
+| **Narration** | A "What's happening" ticker covers births, deaths and their cause, new homes, first trades between pairs, roads, enlarged homes, droughts, hamlets forming, and a daily summary. |
+| **Settlements** | Named, shaded areas with population; candidates are labelled "N people settling". |
+| **Biography** | The inspector opens with who a person is, where and with whom they live, their family, and **why** they are doing what they do (the strongest positive utility term of the chosen option, in words). |
+| **Onboarding** | A welcome card on a fresh start. `--day` fast-forwards silently, then narrates the last two days so the ticker has context. |
+
+**Keys:** `N` toggles the story view (back to the goal colours); `J` shows family ties, lines from a person's home to a parent's home.
+
+**Verified:**
+* `--screenshot` at day 0 (welcome card) and day 220 (seed 2: named hamlet, ticker, legend, biography).
+* Name-stability unit test; viewer tests pass.
+
+### A.29 Follow-up experiments (E2b, E5b) and the working paper
+
+**E2b: no division of labour, because the market is too small.** `sweep --set tools.enabled=true --param resources.stone_threshold=0.6,0.75,0.85 --param skills.practice_max=0.3,1.0 --seed 1-5 --days 300` tested the two interventions predicted in A.26. Neither produced specialists:
+* **Increasing returns** (`practice_max` 1.0) raise the crafter share about 2.5×, but it stays below 1 % of adults, and specialisation falls (0.029 → 0.016).
+* **Scarce, localised stone** shrinks the tool economy instead of concentrating it: tool holders fall from 46 % to 9 %, specialisation from 0.029 to 0.006, and trades and Gini fall with them.
+
+The binding constraint is finding a counterparty: barter happens only between co-located agents, and nobody remembers who sells what. This is Smith's "division of labour is limited by the extent of the market", with the market equal to daily encounters. Prediction for the next PR: memory of past partners' surplus goods should raise specialisation.
+
+**E5b: production creates the conditions for culture** (the H5 follow-up proposed in A.27). With tools on (which makes payoffs trait-sensitive), culture on vs off, seeds 1–15, 300 days, paired:
+
+| Trait | ΔMoran's I [95 % CI] | Seeds up | p |
+|---|---|---|---|
+| caution | +0.122 [+0.053, +0.190] | 13/15 | 0.002 |
+| curiosity | +0.092 [+0.032, +0.151] | 13/15 | 0.005 |
+| sociability | +0.113 [+0.059, +0.166] | 13/15 | 0.0005 |
+| diligence | +0.074 [+0.013, +0.136] | 12/15 | 0.022 |
+
+All four effects survive Holm correction. Population, Gini, trades and clustering R are unchanged (all CIs span 0). The same learning rule is inert in the foraging economy (A.27) and creates trait geography in the production economy, which is consistent with cultural-evolution theory: payoff-biased transmission needs payoffs that covary with behaviour. The A.27 hamlet effect did **not** replicate under tools (−0.7 [−1.7, +0.2]) and is withdrawn.
+
+**Paper.** `docs/paper/accrete.tex` (compiled to `accrete.pdf` with Tectonic: `tectonic -X compile docs/paper/accrete.tex`) is a working paper. It gives the full mathematical model (needs, utility, regrowth, barter, price learning, culture, pipeline), the reproducibility guarantees, the measurement definitions (Clark–Evans, Moran's I, Gini, specialisation), the statistical protocol (paired t, Saltelli/Jansen estimators, bootstrap, noise share, Holm), the results of E1, E2, E2b and E5 with figures, the limitations and the next experiments.

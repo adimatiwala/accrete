@@ -47,7 +47,7 @@ use crate::world::World;
 
 /// Snapshot format version. Bump it whenever the serialized layout or the
 /// meaning of a saved field changes; older files are then rejected.
-pub const SNAPSHOT_FORMAT: u32 = 3;
+pub const SNAPSHOT_FORMAT: u32 = 6;
 
 /// Everything needed to resume a simulation exactly.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -76,6 +76,8 @@ pub struct Snapshot {
     pub ledger: Ledger,
     pub settlements: SettlementTracker,
     pub today: DayCounters,
+    /// Trades of the last 30 days (measurement only; format 4).
+    pub trade_log: Vec<crate::simulation::emergence::TradeRecord>,
     pub metrics: Vec<DailyMetrics>,
     pub deaths: Vec<DeathRecord>,
     pub pathologies: [u64; 4],
@@ -107,6 +109,7 @@ impl Simulation {
             ledger: self.ledger.clone(),
             settlements: self.settlements.clone(),
             today: self.today.clone(),
+            trade_log: self.trade_log.clone(),
             metrics: self.metrics.clone(),
             deaths: self.deaths.clone(),
             pathologies: self.pathologies,
@@ -143,6 +146,7 @@ impl Simulation {
         sim.ledger = s.ledger;
         sim.settlements = s.settlements;
         sim.today = s.today;
+        sim.trade_log = s.trade_log;
         sim.metrics = s.metrics;
         sim.deaths = s.deaths;
         sim.pathologies = s.pathologies;

@@ -380,3 +380,116 @@ fn blocked_gap_is_noticed_and_avoided() {
         "the agent did not reach the food through the other gap"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tools and crafting (A.26).
+// ---------------------------------------------------------------------------
+
+fn load_with_tools(name: &str) -> Simulation {
+    let mut c = config();
+    c.tools.enabled = true;
+    Scenario::load(&scenario_path(name))
+        .expect("scenario parses")
+        .build(&c)
+        .expect("scenario builds")
+}
+
+#[test]
+fn agent_without_a_tool_crafts_one() {
+    let mut sim = load_with_tools("tools_craft.toml");
+    for _ in 0..12 {
+        sim.step();
+        if sim.agents[0].inventory.tools > 0.0 {
+            break;
+        }
+    }
+    let a = &sim.agents[0];
+    assert!(
+        a.inventory.tools > 0.9,
+        "no tool crafted: {:?}",
+        a.inventory
+    );
+    assert_eq!(a.inventory.wood, 0.0, "crafting consumes the wood");
+    assert_eq!(a.inventory.stone, 0.0, "crafting consumes the stone");
+    assert!(a.craft.practice > 0.0, "crafting is practised");
+    sim.check_invariants().expect("tools are conserved");
+}
+
+#[test]
+fn crafting_is_unavailable_when_tools_are_disabled() {
+    let mut sim = load("tools_craft.toml");
+    for _ in 0..12 {
+        sim.step();
+        assert_ne!(sim.agents[0].goal.kind, GoalKind::Craft);
+    }
+    assert_eq!(sim.agents[0].inventory.tools, 0.0);
+}
+
+#[test]
+fn a_tool_speeds_gathering_and_wears_out() {
+    let mut sim = load_with_tools("tools_gather.toml");
+    // Same skills for a fair comparison.
+    for a in sim.agents.iter_mut() {
+        for s in a.skills.iter_mut() {
+            s.aptitude = 1.0;
+        }
+    }
+    for _ in 0..3 {
+        sim.step();
+    }
+    let (with, without) = (&sim.agents[0], &sim.agents[1]);
+    assert!(
+        with.stats.food_gathered > without.stats.food_gathered * 1.3,
+        "tool holder gathered {} vs {}",
+        with.stats.food_gathered,
+        without.stats.food_gathered
+    );
+    assert!(with.inventory.tools < 1.0, "the tool wears with use");
+    sim.check_invariants()
+        .expect("worn tools are accounted for");
+}
+
+// ---------------------------------------------------------------------------
+// Culture: payoff-biased social learning (A.27).
+// ---------------------------------------------------------------------------
+
+fn culture_pair(enabled: bool) -> Simulation {
+    let mut c = config();
+    c.culture.enabled = enabled;
+    let mut sim = Scenario::load(&scenario_path("culture_pair.toml"))
+        .unwrap()
+        .build(&c)
+        .unwrap();
+    // Agent 1 says foraging goes much better for it.
+    sim.agents[0].forage_rate = 1.0;
+    sim.agents[1].forage_rate = 2.0;
+    sim
+}
+
+#[test]
+fn the_worse_forager_copies_the_better_one() {
+    let mut sim = culture_pair(true);
+    let before = (sim.agents[0].traits, sim.agents[1].traits);
+    for _ in 0..8 {
+        sim.step();
+    }
+    let (learner, model) = (sim.agents[0].traits, sim.agents[1].traits);
+    assert!(
+        learner.curiosity > before.0.curiosity,
+        "moved toward the better forager"
+    );
+    assert!(learner.caution > before.0.caution);
+    // The better forager does not copy the worse one.
+    assert_eq!(model, before.1);
+    assert!(sim.today.trait_copies > 0, "learning events are counted");
+}
+
+#[test]
+fn no_learning_when_culture_is_disabled() {
+    let mut sim = culture_pair(false);
+    let before = sim.agents[0].traits;
+    for _ in 0..8 {
+        sim.step();
+    }
+    assert_eq!(sim.agents[0].traits, before);
+}

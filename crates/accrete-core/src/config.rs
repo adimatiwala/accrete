@@ -34,6 +34,8 @@ pub struct Config {
     pub weather: WeatherConfig,
     pub social: SocialConfig,
     pub infrastructure: InfrastructureConfig,
+    pub tools: ToolsConfig,
+    pub culture: CultureConfig,
     pub disruption: DisruptionConfig,
     pub sim: SimConfig,
 }
@@ -95,6 +97,9 @@ impl Config {
                 self.memory.newborn_resource_share,
             ),
             ("trails.decay", self.trails.decay),
+            ("tools.price_learning", self.tools.price_learning),
+            ("tools.price_gossip", self.tools.price_gossip),
+            ("culture.rate", self.culture.rate),
             ("weather.daily_chance", self.weather.daily_chance),
             ("weather.severity_min", self.weather.severity_min),
             ("weather.severity_max", self.weather.severity_max),
@@ -545,6 +550,7 @@ pub struct InventoryConfig {
     pub food_weight: f32,
     pub wood_weight: f32,
     pub stone_weight: f32,
+    pub tools_weight: f32,
     pub carried_spoil_per_day: f32,
     pub stored_spoil_per_day: f32,
     pub chest_capacity: f32,
@@ -561,6 +567,7 @@ impl Default for InventoryConfig {
             food_weight: 1.0,
             wood_weight: 2.0,
             stone_weight: 3.0,
+            tools_weight: 2.0,
             carried_spoil_per_day: 0.02,
             stored_spoil_per_day: 0.005,
             chest_capacity: 200.0,
@@ -730,6 +737,11 @@ pub struct DecisionConfig {
     pub reproduce_min_return: f32,
     /// Value of gathering a unit-fraction of wanted building materials.
     pub materials_weight: f32,
+    /// Value of holding a tool the agent lacks (gathering productivity).
+    pub tool_weight: f32,
+    /// Value of crafting tools beyond one's own need, priced at the agent's
+    /// believed exchange rate (food per tool).
+    pub tool_trade_weight: f32,
     pub shelter_weight: f32,
     /// Bonus for continuing the current goal (hysteresis).
     pub commitment: f32,
@@ -774,6 +786,8 @@ impl Default for DecisionConfig {
             reproduce_return_weight: 3.0,
             reproduce_min_return: 0.85,
             materials_weight: 0.8,
+            tool_weight: 1.0,
+            tool_trade_weight: 0.8,
             shelter_weight: 0.9,
             commitment: 0.15,
             jitter: 0.02,
@@ -959,6 +973,8 @@ pub struct SocialConfig {
     /// Utility per unit of a good held below the agent's need for it.
     pub food_value: f32,
     pub material_value: f32,
+    /// Utility per tool held below the agent's need for one.
+    pub tool_value: f32,
     /// Utility per unit held beyond need.
     pub surplus_value: f32,
 }
@@ -979,7 +995,82 @@ impl Default for SocialConfig {
             social_slots: 32,
             food_value: 1.0,
             material_value: 0.6,
+            tool_value: 2.0,
             surplus_value: 0.05,
+        }
+    }
+}
+
+/// Payoff-biased social learning (A.27).
+///
+/// When two agents talk (the same meeting in which they share where food
+/// is), each mentions how well foraging has been going: its experienced
+/// return. A listener whose partner does better shifts each personality
+/// trait a little toward the partner's: `rate × min(1, payoff gap / own
+/// return) × (0.5 + 0.5 × sociability)` of the way. Inheritance is unchanged.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CultureConfig {
+    pub enabled: bool,
+    pub rate: f32,
+}
+
+impl Default for CultureConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rate: 0.05,
+        }
+    }
+}
+
+/// Tools and crafting (A.26): a production chain with comparative advantage.
+///
+/// A tool in hand multiplies gathering by `gather_bonus` and wears out by
+/// `1 / durability_ticks` per productive gathering tick. `Craft` turns
+/// `craft_wood` + `craft_stone` into `output_per_batch × crafting skill` tools
+/// over `craft_ticks`. Each agent keeps a belief about the exchange rate
+/// (food per tool), learned from its own trades and from conversation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ToolsConfig {
+    pub enabled: bool,
+    pub gather_bonus: f32,
+    pub durability_ticks: f32,
+    pub craft_wood: f32,
+    pub craft_stone: f32,
+    pub craft_ticks: u32,
+    pub output_per_batch: f32,
+    /// Crafting practice gained per crafting tick (capped at `skills.practice_max`).
+    pub practice_per_tick: f32,
+    /// Tools an adult wants to hold for its own use.
+    pub wanted: f32,
+    /// Food per tool an agent assumes before it has any experience.
+    pub price_prior: f32,
+    /// Food a batch must be believed to fetch before an agent crafts for exchange.
+    pub surplus_threshold_food: f32,
+    /// Weight of each observed trade in the price belief.
+    pub price_learning: f32,
+    /// How far a listener moves its belief toward a teller's in conversation.
+    pub price_gossip: f32,
+}
+
+impl Default for ToolsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            gather_bonus: 1.5,
+            durability_ticks: 48.0,
+            craft_wood: 2.0,
+            craft_stone: 1.0,
+            craft_ticks: 4,
+            output_per_batch: 1.0,
+            practice_per_tick: 0.02,
+            wanted: 1.0,
+            price_prior: 3.0,
+            surplus_threshold_food: 4.0,
+            price_learning: 0.3,
+            price_gossip: 0.2,
         }
     }
 }

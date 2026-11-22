@@ -61,6 +61,7 @@ pub enum Intent {
     Reproduce,
     ImproveTrail,
     ImproveShelter,
+    Craft,
 }
 
 pub struct Simulation {
@@ -85,6 +86,9 @@ pub struct Simulation {
     pub pathology_log: Vec<(u64, u32, PathologyKind)>,
     pub settlements: SettlementTracker,
     pub today: DayCounters,
+    /// Barters of the last 30 days, for trade-network measurement only.
+    /// Agents never read it, and it is not part of the state hash.
+    pub trade_log: Vec<crate::simulation::emergence::TradeRecord>,
     pub hit_cap: bool,
     /// Latest decision trace per agent (debugging; not part of the state hash).
     pub traces: BTreeMap<u32, Trace>,
@@ -152,6 +156,7 @@ impl Simulation {
             pathology_log: Vec::new(),
             settlements: SettlementTracker::default(),
             today: DayCounters::default(),
+            trade_log: Vec::new(),
             hit_cap: false,
             traces: BTreeMap::new(),
             intents: Vec::new(),
@@ -171,7 +176,7 @@ impl Simulation {
         self.ledger = Ledger::default();
         let totals = self.world.resource_totals();
         let carried = self.carried_totals();
-        for r in Resource::ALL {
+        for r in Resource::GOODS {
             self.ledger.initial[r.index()] = f64::from(totals.get(r)) + carried[r.index()];
         }
     }
@@ -242,6 +247,10 @@ impl Simulation {
             pathology: PathologyState::default(),
             practiced_today: 0,
             frontier_cache: None,
+            craft: Skill {
+                aptitude: craft_aptitude(self.world.seed, id, c),
+                practice: 0.0,
+            },
             forage_rate: c.skills.base_food,
             forage_today_food: 0.0,
             forage_today_ticks: 0,
@@ -264,10 +273,10 @@ impl Simulation {
             .map(|i| &self.agents[i])
     }
 
-    fn carried_totals(&self) -> [f64; 3] {
-        let mut t = [0.0f64; 3];
+    fn carried_totals(&self) -> [f64; 4] {
+        let mut t = [0.0f64; 4];
         for a in &self.agents {
-            for r in Resource::ALL {
+            for r in Resource::GOODS {
                 t[r.index()] += f64::from(a.inventory.get(r));
             }
         }
@@ -558,6 +567,7 @@ impl Simulation {
             GoalKind::Reproduce => Intent::Reproduce,
             GoalKind::ImproveTrail => Intent::ImproveTrail,
             GoalKind::ImproveShelter => Intent::ImproveShelter,
+            GoalKind::Craft => Intent::Craft,
         }
     }
 
@@ -644,12 +654,18 @@ impl Simulation {
                 let room = a
                     .inventory
                     .room_for(r, a.carry_capacity(c, &self.rates), &c.inventory);
-                let want = a.gather_rate(r, c, &self.rates).min(room);
+                let bonus = if c.tools.enabled && a.inventory.tools > 0.0 {
+                    c.tools.gather_bonus
+                } else {
+                    1.0
+                };
+                let want = (a.gather_rate(r, c, &self.rates) * bonus).min(room);
                 reqs.push((a.pos, r, i, want.max(0.0)));
             }
         }
         reqs.sort_by(|a, b| (a.0, a.1, a.2).cmp(&(b.0, b.1, b.2)));
         let practice_step = c.skills.practice_per_tick;
+        let (tools_on, tool_wear) = (c.tools.enabled, 1.0 / c.tools.durability_ticks.max(1e-3));
         let practice_max = c.skills.practice_max;
         let mut k = 0;
         while k < reqs.len() {
@@ -674,6 +690,11 @@ impl Simulation {
                 a.practiced_today |= 1 << res.index();
                 let s = &mut a.skills[res.index()];
                 s.practice = (s.practice + practice_step).min(practice_max);
+                if got > 0.0 && tools_on && a.inventory.tools > 0.0 {
+                    // A tool wears with every productive gathering tick.
+                    let worn = a.inventory.take(Resource::Tools, tool_wear);
+                    self.ledger.construction[Resource::Tools.index()] += f64::from(worn);
+                }
                 if got > 0.0 {
                     a.pathology.last_progress_tick = tick;
                     if res == Resource::Food {
@@ -717,6 +738,7 @@ impl Simulation {
                 Resource::Food => &mut t.food,
                 Resource::Wood => &mut t.wood,
                 Resource::Stone => &mut t.stone,
+                Resource::Tools => return got,
             };
             let take = rest.min(*slot);
             *slot -= take;
@@ -745,6 +767,7 @@ impl Simulation {
                         | Intent::BuildStorage
                         | Intent::ImproveTrail
                         | Intent::ImproveShelter
+                        | Intent::Craft
                 )
             })
             .map(|(i, _)| i)
@@ -758,6 +781,7 @@ impl Simulation {
                 Intent::BuildStorage => self.do_build_storage(i, tick),
                 Intent::ImproveTrail => self.do_improve_trail(i, tick),
                 Intent::ImproveShelter => self.do_improve_shelter(i, tick),
+                Intent::Craft => self.do_craft(i, tick),
                 _ => unreachable!(),
             }
         }
@@ -847,7 +871,7 @@ impl Simulation {
                 moved.put(r, m);
             }
         }
-        for r in Resource::ALL {
+        for r in Resource::GOODS {
             self.ledger.transferred[r.index()] += f64::from(moved.get(r));
         }
         let stored = home.stored();
@@ -994,6 +1018,8 @@ impl Simulation {
             }
         };
         if let Some(o) = old {
+            let from = self.world.homes[o as usize].pos;
+            self.today.home_move_distance_sum += f64::from(from.chebyshev(pos));
             self.leave_home(aid, o, tick);
             self.today.home_moves += 1;
             self.agents[i].stats.home_moves += 1;
@@ -1133,6 +1159,7 @@ impl Simulation {
         parent.goal = Goal::idle(parent.pos, tick);
         let parent_id = parent.id;
         let parent_forage_rate = parent.forage_rate;
+        let parent_craft_aptitude = parent.craft.aptitude;
         insert_sorted(&mut self.world.homes[parent_home as usize].residents, id);
         self.total_births += 1;
         self.today.births += 1;
@@ -1179,6 +1206,10 @@ impl Simulation {
             },
             practiced_today: 0,
             frontier_cache: None,
+            craft: Skill {
+                aptitude: inherited_craft_aptitude(parent_craft_aptitude, self.world.seed, id, &c),
+                practice: 0.0,
+            },
             forage_rate: parent_forage_rate,
             forage_today_food: 0.0,
             forage_today_ticks: 0,
@@ -1409,7 +1440,7 @@ impl Simulation {
         let mut remaining = goods;
         if let Some(h) = a.home {
             let home = &mut self.world.homes[h as usize];
-            for r in Resource::ALL {
+            for r in Resource::GOODS {
                 for chest in home.chests.iter_mut() {
                     let amt = remaining.get(r);
                     if amt <= 0.0 {
@@ -1431,7 +1462,7 @@ impl Simulation {
                 }),
             }
         }
-        for r in Resource::ALL {
+        for r in Resource::GOODS {
             self.ledger.transferred[r.index()] += f64::from(goods.get(r));
         }
         a.inventory = Inventory::EMPTY;
@@ -1666,6 +1697,9 @@ impl Simulation {
                     s.practice = (s.practice - c.skills.practice_decay_per_day).max(0.0);
                 }
             }
+            if a.practiced_today & CRAFT_PRACTICE_BIT == 0 {
+                a.craft.practice = (a.craft.practice - c.skills.practice_decay_per_day).max(0.0);
+            }
             a.practiced_today = 0;
             if a.forage_today_ticks >= 2 {
                 let rate = a.forage_today_food / a.forage_today_ticks as f32;
@@ -1742,6 +1776,8 @@ impl Simulation {
         let m = self.collect_metrics(day);
         self.metrics.push(m);
         self.today = DayCounters::default();
+        let keep_from = (tick + 1).saturating_sub(TRADE_WINDOW_TICKS);
+        self.trade_log.retain(|r| r.tick >= keep_from);
     }
 
     fn collect_metrics(&self, day: u32) -> DailyMetrics {
@@ -1877,6 +1913,7 @@ impl Simulation {
             .filter(|&p| self.world.tile(p).is_land() && self.weather.in_drought(p))
             .count();
         m.drought_area = in_drought as f32 / land as f32;
+        self.observatory_metrics(&mut m);
         m.disrupted_tiles = DisruptionState::disrupted_tiles(&self.world);
         m.trail_tiles = self
             .world
@@ -1937,7 +1974,7 @@ impl Simulation {
         let c = &self.config;
         let totals = self.world.resource_totals();
         let carried = self.carried_totals();
-        for r in Resource::ALL {
+        for r in Resource::GOODS {
             let actual = f64::from(totals.get(r)) + carried[r.index()];
             let expected = self.ledger.expected_total(r);
             let tol = 1e-3 * expected.abs().max(1.0);
@@ -2110,6 +2147,7 @@ fn observe_omniscient(a: &mut Agent, world: &World, c: &Config, tick: u64) {
             Resource::Food => t.food,
             Resource::Wood => t.wood,
             Resource::Stone => t.stone,
+            Resource::Tools => 0.0,
         };
         base + world.pile_at(p).map_or(0.0, |pl| pl.goods.get(res))
     };
@@ -2246,6 +2284,149 @@ fn random_choice(mut cands: Vec<Candidate>, rng: &mut Rng) -> Vec<Candidate> {
     // Stable: keeps the shuffled order of everything else.
     cands.sort_by_key(|c| c.kind == GoalKind::Idle);
     cands
+}
+
+/// Trades kept for network measurement (30 days).
+pub const TRADE_WINDOW_TICKS: u64 = 30 * TICKS_PER_DAY;
+
+impl Simulation {
+    /// Observatory metrics (A.24). Measurement only.
+    fn observatory_metrics(&self, m: &mut DailyMetrics) {
+        use crate::simulation::emergence as em;
+        let inv = &self.config.inventory;
+        m.wealth_gini = em::gini(&em::household_wealth(&self.world, &self.agents, inv));
+        let sizes = em::cluster_sizes(&self.world, self.config.settlement.radius as i32);
+        let homed: u32 = sizes.iter().map(|s| s.1).sum();
+        m.largest_cluster_share = sizes
+            .first()
+            .map_or(0.0, |s| s.1 as f32 / homed.max(1) as f32);
+        m.clusters_2plus = sizes.iter().filter(|s| s.0 >= 2).count() as u32;
+        m.mean_move_distance = if self.today.home_moves > 0 {
+            (self.today.home_move_distance_sum / f64::from(self.today.home_moves)) as f32
+        } else {
+            0.0
+        };
+        let since = (self.tick + 1).saturating_sub(TRADE_WINDOW_TICKS);
+        let net = em::trade_network(&self.trade_log, since);
+        m.trade_pairs_30d = net.pairs;
+        m.trade_mean_degree = net.mean_degree;
+        m.trade_degree_gini = net.degree_gini;
+        m.trade_cross_household_share = net.cross_household_share;
+        m.trade_repeat_share = net.repeat_share;
+        let moran =
+            |f: fn(&Agent) -> f32| em::morans_i(&self.world, &self.agents, 8, f).unwrap_or(0.0);
+        m.moran_curiosity = moran(|a| a.traits.curiosity);
+        m.moran_caution = moran(|a| a.traits.caution);
+        m.moran_sociability = moran(|a| a.traits.sociability);
+        m.moran_diligence = moran(|a| a.traits.diligence);
+        m.tools_crafted = self.today.tools_crafted as f32;
+        m.trait_copies = self.today.trait_copies;
+        {
+            let adults: Vec<&Agent> = self
+                .agents
+                .iter()
+                .filter(|a| !a.is_juvenile(&self.rates))
+                .collect();
+            let n = adults.len().max(1) as f64;
+            let mean = |f: fn(&Agent) -> f32| {
+                (adults.iter().map(|a| f64::from(f(a))).sum::<f64>() / n) as f32
+            };
+            m.mean_curiosity = mean(|a| a.traits.curiosity);
+            m.mean_caution = mean(|a| a.traits.caution);
+            m.mean_sociability = mean(|a| a.traits.sociability);
+            m.mean_diligence = mean(|a| a.traits.diligence);
+        }
+        let adults: Vec<&Agent> = self
+            .agents
+            .iter()
+            .filter(|a| !a.is_juvenile(&self.rates))
+            .collect();
+        let n = adults.len().max(1) as f32;
+        m.tool_holders_share = adults.iter().filter(|a| a.inventory.tools > 0.0).count() as f32 / n;
+        m.crafter_share = adults
+            .iter()
+            .filter(|a| {
+                let top = a.skills.iter().map(|s| s.practice).fold(0.0f32, f32::max);
+                a.craft.practice > 0.05 && a.craft.practice >= top
+            })
+            .count() as f32
+            / n;
+        let prices: Vec<f64> = adults
+            .iter()
+            .filter(|a| a.memory.tool_price > 0.0)
+            .map(|a| f64::from(a.memory.tool_price))
+            .collect();
+        if prices.len() >= 2 {
+            let mean = prices.iter().sum::<f64>() / prices.len() as f64;
+            let var = prices.iter().map(|p| (p - mean) * (p - mean)).sum::<f64>()
+                / (prices.len() as f64 - 1.0);
+            m.tool_price_mean = mean as f32;
+            m.tool_price_cv = if mean > 0.0 {
+                (var.sqrt() / mean) as f32
+            } else {
+                0.0
+            };
+        }
+    }
+}
+
+/// Bit in `Agent::practiced_today` for crafting (resources use bits 0..3).
+pub const CRAFT_PRACTICE_BIT: u8 = 1 << 3;
+
+/// A founder's crafting aptitude, uniform in the gathering-aptitude range,
+/// from a stateless hash of (world seed, agent id). Drawing it from an RNG
+/// stream would shift every later draw and change runs with tools disabled.
+fn craft_aptitude(seed: u64, id: u32, c: &Config) -> f32 {
+    let u =
+        crate::rng::unit_f32_from_u64(crate::hash::mix_words(&[seed, u64::from(id), 0xC2AF_7001]));
+    c.skills.aptitude_min + u * (c.skills.aptitude_max - c.skills.aptitude_min)
+}
+
+/// A newborn's crafting aptitude: the parent's, jittered like other traits,
+/// again from a stateless hash.
+fn inherited_craft_aptitude(parent: f32, seed: u64, id: u32, c: &Config) -> f32 {
+    let u =
+        crate::rng::unit_f32_from_u64(crate::hash::mix_words(&[seed, u64::from(id), 0xC2AF_7002]));
+    let j = c.life.trait_inherit_jitter;
+    (parent + (u * 2.0 - 1.0) * j).clamp(c.skills.aptitude_min, c.skills.aptitude_max)
+}
+
+impl Simulation {
+    /// Craft tools from carried wood and stone (A.26).
+    fn do_craft(&mut self, i: usize, tick: u64) {
+        let c = self.config.clone();
+        let tc = &c.tools;
+        let a = &mut self.agents[i];
+        if !tc.enabled || a.inventory.wood < tc.craft_wood || a.inventory.stone < tc.craft_stone {
+            a.goal = Goal::idle(a.pos, tick);
+            return;
+        }
+        a.goal.work += 1;
+        a.pathology.last_progress_tick = tick;
+        a.practiced_today |= CRAFT_PRACTICE_BIT;
+        a.craft.practice = (a.craft.practice + tc.practice_per_tick).min(c.skills.practice_max);
+        if a.goal.work < tc.craft_ticks.max(1) {
+            return;
+        }
+        let w = a.inventory.take(Resource::Wood, tc.craft_wood);
+        let st = a.inventory.take(Resource::Stone, tc.craft_stone);
+        self.ledger.construction[Resource::Wood.index()] += f64::from(w);
+        self.ledger.construction[Resource::Stone.index()] += f64::from(st);
+        let cap = a.carry_capacity(&c, &self.rates);
+        let made = (tc.output_per_batch * a.craft.level()).min(a.inventory.room_for(
+            Resource::Tools,
+            cap,
+            &c.inventory,
+        ));
+        a.inventory.put(Resource::Tools, made);
+        self.ledger.regrown[Resource::Tools.index()] += f64::from(made);
+        a.stats.tools_crafted += made;
+        self.today.tools_crafted += f64::from(made);
+        a.goal = Goal::idle(a.pos, tick);
+        let (id, pos) = (a.id, a.pos);
+        self.events
+            .push(tick, Some(id), pos, EventKind::Crafted { amount: made });
+    }
 }
 
 #[cfg(test)]

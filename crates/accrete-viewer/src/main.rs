@@ -19,6 +19,8 @@
 //! intervention side by side from now · V switch the branch on screen ·
 //! X drop the branch. Interventions change world conditions only.
 
+mod story;
+
 use std::path::PathBuf;
 
 use accrete_core::agents::agent::{Agent, GoalKind};
@@ -203,13 +205,17 @@ struct App {
     intervention: usize,
     last_snapshot: Option<PathBuf>,
     status: Option<(String, f64)>,
+    /// Narration, roles, effects and biographies (presentation only).
+    story: story::Story,
 }
 
 impl App {
     fn new(seed: u64, config: Config) -> Self {
         let sim = Simulation::new(seed, config.clone());
         let texture = map_texture(&sim, Overlay::Biome);
+        let story = story::Story::new(&sim);
         let mut app = Self {
+            story,
             sim,
             seed,
             config,
@@ -320,6 +326,7 @@ impl App {
         self.config.weather.scripted.clear();
         self.config.disruption.scripted.clear();
         self.sim = sim;
+        self.reset_story();
     }
 
     /// Branch from the current state: the simulation on screen becomes the
@@ -366,6 +373,7 @@ impl App {
         if let Some(b) = self.branch.as_mut() {
             std::mem::swap(&mut self.sim, &mut b.other);
             b.viewing_intervention = !b.viewing_intervention;
+            self.reset_story();
             self.keep_selection_if_present();
             self.refresh_texture();
         } else {
@@ -390,10 +398,43 @@ impl App {
 
     /// Run one tick, keeping a branch in lockstep.
     fn step_all(&mut self) {
+        self.story.before_step(&self.sim);
         self.sim.step();
+        self.story.after_step(&self.sim, get_time());
         if let Some(b) = self.branch.as_mut() {
             b.other.step();
         }
+    }
+
+    /// Restart narration for a new or replaced simulation, keeping toggles.
+    fn reset_story(&mut self) {
+        let (enabled, kin) = (self.story.enabled, self.story.kin_lines);
+        self.story = story::Story::new(&self.sim);
+        self.story.enabled = enabled;
+        self.story.kin_lines = kin;
+        self.story.intro = false;
+    }
+
+    /// Where to draw an agent: between its previous and current tile while
+    /// the simulation runs slowly enough to see it, and fanned out a little so
+    /// people sharing a tile stay visible.
+    fn agent_screen_pos(&self, a: &Agent) -> Vec2 {
+        let cur = self.tile_to_screen(a.pos);
+        let frac = if !self.paused && SPEEDS[self.speed] <= 24.0 {
+            self.accumulator.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let base = match self.story.prev.get(&a.id) {
+            Some(&p) if p != a.pos && p.chebyshev(a.pos) <= 2 => {
+                let from = self.tile_to_screen(p);
+                from + (cur - from) * frac
+            }
+            _ => cur,
+        };
+        let jitter = ((a.id.wrapping_mul(2_654_435_761) >> 16) & 0xff) as f32 / 255.0 - 0.5;
+        let jitter2 = ((a.id.wrapping_mul(40_503) >> 8) & 0xff) as f32 / 255.0 - 0.5;
+        base + vec2(jitter, jitter2) * self.zoom * 0.6
     }
 
     fn regenerate(&mut self, seed: u64) {
@@ -462,8 +503,33 @@ impl App {
         }
         while get_char_pressed().is_some() {}
 
+        if self.story.intro
+            && (get_last_key_pressed().is_some() || is_mouse_button_pressed(MouseButton::Left))
+        {
+            self.story.intro = false;
+            if is_key_pressed(KeyCode::Space) {
+                self.paused = false;
+            }
+            return;
+        }
         if is_key_pressed(KeyCode::Space) {
             self.paused = !self.paused;
+        }
+        if is_key_pressed(KeyCode::N) {
+            self.story.enabled = !self.story.enabled;
+            self.say(if self.story.enabled {
+                "story view on"
+            } else {
+                "story view off (goal colours)"
+            });
+        }
+        if is_key_pressed(KeyCode::J) {
+            self.story.kin_lines = !self.story.kin_lines;
+            self.say(if self.story.kin_lines {
+                "family ties shown"
+            } else {
+                "family ties hidden"
+            });
         }
         if is_key_pressed(KeyCode::Period) {
             self.step_all();
@@ -644,6 +710,9 @@ impl App {
             },
         );
         self.draw_homes_and_agents();
+        if self.story.enabled {
+            self.draw_story_overlays();
+        }
         self.draw_selection_marker();
         self.draw_top_bar();
         self.draw_panel();
@@ -749,12 +818,12 @@ impl App {
                 color,
             );
         }
+        if self.story.enabled {
+            self.draw_story_layer();
+            return;
+        }
         for a in &self.sim.agents {
-            let c = self.tile_to_screen(a.pos);
-            // Spread agents that share a tile so they remain visible.
-            let jitter = ((a.id.wrapping_mul(2_654_435_761) >> 16) & 0xff) as f32 / 255.0 - 0.5;
-            let jitter2 = ((a.id.wrapping_mul(40_503) >> 8) & 0xff) as f32 / 255.0 - 0.5;
-            let p = c + vec2(jitter, jitter2) * z * 0.6;
+            let p = self.agent_screen_pos(a);
             let rgb = goal_color(a.goal.kind as usize);
             let r = if a.is_juvenile(&self.sim.rates) {
                 0.18
@@ -767,6 +836,247 @@ impl App {
                 (z * r).max(1.5),
                 Color::from_rgba(rgb[0], rgb[1], rgb[2], 255),
             );
+        }
+    }
+
+    /// The story view of people: kin lines, motion trails, role-coloured
+    /// people with what they carry, and short-lived effects.
+    fn draw_story_layer(&self) {
+        let z = self.zoom;
+        let now = get_time();
+        // Family ties: a line from a person's home to their parent's home.
+        if self.story.kin_lines {
+            for a in &self.sim.agents {
+                let (Some(p), Some(h)) = (a.parent, a.home) else {
+                    continue;
+                };
+                let Some(parent) = self.sim.agent(p) else {
+                    continue;
+                };
+                let Some(ph) = parent.home else { continue };
+                if ph == h {
+                    continue;
+                }
+                let x = self.tile_to_screen(self.sim.world.homes[h as usize].pos);
+                let y = self.tile_to_screen(self.sim.world.homes[ph as usize].pos);
+                draw_line(
+                    x.x,
+                    x.y,
+                    y.x,
+                    y.y,
+                    1.5,
+                    Color::from_rgba(255, 120, 200, 110),
+                );
+            }
+        }
+        // Motion trails.
+        if z >= 3.0 {
+            for a in &self.sim.agents {
+                let Some(t) = self.story.trails.get(&a.id) else {
+                    continue;
+                };
+                let pts: Vec<Vec2> = t.iter().map(|&p| self.tile_to_screen(p)).collect();
+                for (k, w) in pts.windows(2).enumerate() {
+                    let alpha = (40 + 120 * k / pts.len().max(1)) as u8;
+                    let mut c = story::Role::of(a).color();
+                    c.a = f32::from(alpha) / 255.0;
+                    draw_line(w[0].x, w[0].y, w[1].x, w[1].y, (z * 0.08).max(1.0), c);
+                }
+            }
+        }
+        // People.
+        let r_adult = (z * 0.28).max(2.0);
+        for a in &self.sim.agents {
+            let p = self.agent_screen_pos(a);
+            let role = story::Role::of(a);
+            let juvenile = a.is_juvenile(&self.sim.rates);
+            let r = if juvenile { r_adult * 0.65 } else { r_adult };
+            draw_circle(p.x, p.y, r, role.color());
+            if a.age_ticks >= self.sim.rates.elder_ticks {
+                draw_circle_lines(p.x, p.y, r, 1.2, Color::from_rgba(230, 230, 230, 220));
+            }
+            if z >= 6.0 {
+                // What they carry: a small dot (food amber, wood brown, tool cyan).
+                let carry = if a.inventory.tools > 0.0 {
+                    Some(story::Role::Crafter.color())
+                } else if a.inventory.food >= 4.0 {
+                    Some(Color::from_rgba(255, 200, 60, 255))
+                } else if a.inventory.wood + a.inventory.stone >= 2.0 {
+                    Some(Color::from_rgba(140, 90, 50, 255))
+                } else {
+                    None
+                };
+                if let Some(c) = carry {
+                    draw_circle(p.x + r * 0.8, p.y - r * 0.8, r * 0.4, c);
+                }
+            }
+        }
+        // Effects.
+        for (t0, fx) in &self.story.effects {
+            let age = ((now - t0) / 2.5).clamp(0.0, 1.0) as f32;
+            let fade = 1.0 - age;
+            match fx {
+                story::Fx::TradeArc { a, b } => {
+                    let (Some(pa), Some(pb)) = (self.sim.agent(*a), self.sim.agent(*b)) else {
+                        continue;
+                    };
+                    let (x, y) = (self.agent_screen_pos(pa), self.agent_screen_pos(pb));
+                    let mid = (x + y) * 0.5 - vec2(0.0, (z * 1.5).max(10.0));
+                    let col = Color::new(1.0, 0.84, 0.3, fade);
+                    let mut prev = x;
+                    for k in 1..=10 {
+                        let t = k as f32 / 10.0;
+                        let q = x * (1.0 - t) * (1.0 - t) + mid * 2.0 * t * (1.0 - t) + y * t * t;
+                        draw_line(prev.x, prev.y, q.x, q.y, 2.0, col);
+                        prev = q;
+                    }
+                }
+                story::Fx::Pulse { at, color } => {
+                    let c = self.tile_to_screen(*at);
+                    let mut col = *color;
+                    col.a = fade * 0.8;
+                    draw_circle_lines(c.x, c.y, (z * (0.5 + 2.0 * age)).max(4.0), 2.0, col);
+                }
+                story::Fx::Ring { at, color } => {
+                    let c = self.tile_to_screen(*at);
+                    let mut col = *color;
+                    col.a = fade;
+                    draw_circle_lines(c.x, c.y, (z * (0.4 + 1.2 * age)).max(3.0), 2.5, col);
+                }
+            }
+        }
+    }
+
+    /// Settlement names, the story ticker, the legend and the welcome card.
+    fn draw_story_overlays(&self) {
+        let area = self.map_area();
+        let z = self.zoom;
+        for s in &self.sim.settlements.tracked {
+            let centre = Pos::new(s.centre.0.round() as i32, s.centre.1.round() as i32);
+            let c = self.offset + vec2(s.centre.0 + 0.5, s.centre.1 + 0.5) * z;
+            let r = (3.0 + (s.homes.len() as f32).sqrt()) * z;
+            let confirmed = s.class != accrete_core::simulation::settlement::SizeClass::Candidate;
+            let fill = if confirmed {
+                Color::from_rgba(255, 110, 210, 38)
+            } else {
+                Color::from_rgba(170, 170, 255, 26)
+            };
+            draw_circle(c.x, c.y, r, fill);
+            let label = if confirmed {
+                format!(
+                    "{}  ({} people)",
+                    story::settlement_name(&self.sim, s.id, centre),
+                    s.residents
+                )
+            } else {
+                format!("{} people settling", s.residents)
+            };
+            let dims = measure_text(&label, None, 18, 1.0);
+            draw_rectangle(
+                c.x - dims.width / 2.0 - 4.0,
+                c.y - r - 22.0,
+                dims.width + 8.0,
+                20.0,
+                Color::from_rgba(0, 0, 0, 150),
+            );
+            draw_text(&label, c.x - dims.width / 2.0, c.y - r - 7.0, 18.0, WHITE);
+        }
+        // Story ticker.
+        let lines = &self.story.lines;
+        if !lines.is_empty() {
+            let h = 22.0 + 19.0 * lines.len() as f32;
+            let (x, y) = (area.x + 10.0, area.y + area.h - h - 10.0);
+            draw_rectangle(x, y, 520.0, h, Color::from_rgba(8, 10, 14, 200));
+            draw_text(
+                "What's happening",
+                x + 10.0,
+                y + 17.0,
+                17.0,
+                Color::from_rgba(200, 205, 215, 255),
+            );
+            for (k, (day, text, col)) in lines.iter().enumerate() {
+                let mut col = *col;
+                col.a = 1.0 - 0.07 * k as f32;
+                draw_text(
+                    &format!("day {day:>3}  {text}"),
+                    x + 10.0,
+                    y + 36.0 + 19.0 * k as f32,
+                    16.0,
+                    col,
+                );
+            }
+        }
+        // Legend.
+        let (lx, ly) = (
+            area.x + area.w - 250.0,
+            area.y + area.h - 30.0 - 18.0 * story::Role::ALL.len() as f32,
+        );
+        draw_rectangle(
+            lx - 8.0,
+            ly - 22.0,
+            248.0,
+            30.0 + 18.0 * story::Role::ALL.len() as f32,
+            Color::from_rgba(8, 10, 14, 190),
+        );
+        draw_text(
+            "each dot is a person who is...",
+            lx,
+            ly - 6.0,
+            16.0,
+            Color::from_rgba(200, 205, 215, 255),
+        );
+        for (k, role) in story::Role::ALL.iter().enumerate() {
+            let y = ly + 12.0 + 18.0 * k as f32;
+            draw_circle(lx + 6.0, y - 5.0, 5.0, role.color());
+            draw_text(role.name(), lx + 18.0, y, 16.0, WHITE);
+        }
+        if self.story.intro {
+            let (w, h) = (640.0, 230.0);
+            let (x, y) = (area.x + (area.w - w) / 2.0, area.y + (area.h - h) / 2.0);
+            draw_rectangle(x, y, w, h, Color::from_rgba(6, 8, 12, 235));
+            draw_rectangle_lines(x, y, w, h, 2.0, Color::from_rgba(255, 200, 120, 255));
+            let text = [
+                (
+                    "Welcome to Accrete",
+                    28.0,
+                    Color::from_rgba(255, 220, 150, 255),
+                ),
+                (
+                    "Each dot is a person. Nobody tells them what to do: each one only",
+                    18.0,
+                    WHITE,
+                ),
+                (
+                    "sees the land around them, remembers what they have found, and",
+                    18.0,
+                    WHITE,
+                ),
+                (
+                    "chooses for themselves: eat, rest, explore, build a home, trade,",
+                    18.0,
+                    WHITE,
+                ),
+                (
+                    "start a family. Watch hamlets, trade and paths appear on their own.",
+                    18.0,
+                    WHITE,
+                ),
+                (
+                    "Click a person to see who they are and why they do what they do.",
+                    18.0,
+                    Color::from_rgba(200, 220, 255, 255),
+                ),
+                (
+                    "Space to start   +/- speed   J family ties   N story on/off   H help",
+                    17.0,
+                    Color::from_rgba(180, 185, 195, 255),
+                ),
+            ];
+            let mut ty = y + 42.0;
+            for (t, size, col) in text {
+                draw_text(t, x + 24.0, ty, size, col);
+                ty += if size > 20.0 { 36.0 } else { 26.0 };
+            }
         }
     }
 
@@ -927,6 +1237,10 @@ impl App {
         let r = &self.sim.rates;
         let dim = Color::from_rgba(150, 156, 170, 255);
         let accent = Color::from_rgba(255, 210, 120, 255);
+        for l in story::biography(&self.sim, a) {
+            line(&l, Color::from_rgba(255, 236, 190, 255));
+        }
+        line("", dim);
         line(
             &format!(
                 "Agent {}  {}  age {:.0} d",
@@ -1270,8 +1584,10 @@ impl App {
             "C  fit map    G  new random seed    S  type a seed",
             "K  save snapshot   L  reload it   I  pick intervention",
             "B  branch (control + intervention)   V  switch   X  drop",
-            "Agent colours = current goal (see legend). Homes: white,",
-            "gold = has storage, grey = vacant. Juveniles are smaller.",
+            "N  story view on/off (roles, names, narration)   J  family ties",
+            "Story view: people coloured by what they are doing (legend",
+            "bottom-right), arcs = trades, rings = new homes and tools.",
+            "Goal view (N): colours = internal goals, as below.",
         ];
         let h = 26.0 + 20.0 * (lines.len() + GoalKind::ALL.len() / 2 + 1) as f32;
         draw_rectangle(
@@ -1347,7 +1663,14 @@ async fn main() {
     // `--day` is the day to show; a loaded snapshot may already be past it.
     let target = u64::from(args.day) * TICKS_PER_DAY;
     if target > app.sim.tick {
-        app.sim.run(target - app.sim.tick);
+        // Fast-forward silently, then live through the last two days so the
+        // story ticker has something to say when the window opens.
+        let narrated = (target - app.sim.tick).min(2 * TICKS_PER_DAY);
+        app.sim.run(target - app.sim.tick - narrated);
+        app.reset_story();
+        for _ in 0..narrated {
+            app.step_all();
+        }
         app.refresh_texture();
     } else if args.load.is_some() && args.day > 0 && target < app.sim.tick {
         eprintln!(
@@ -1355,6 +1678,9 @@ async fn main() {
             app.sim.day(),
             args.day
         );
+    }
+    if args.day > 0 || args.load.is_some() {
+        app.story.intro = false;
     }
     if let Some(id) = args.select {
         app.selection = Selection::Agent(id);
