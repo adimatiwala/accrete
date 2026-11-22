@@ -2,12 +2,71 @@ name: ci
 
 # Bit-identical results are required on macOS (Apple Silicon) and Windows.
 # The same golden hashes in tests/golden/ are checked on both.
+#
+# Path filtering: the `changes` job decides from the changed files what has to
+# run (see .github/scripts/ci-changes.sh). Docs-only changes skip the Rust job;
+# front-end-only changes skip the slow debug pass of accrete-core. Pushes to
+# main and manual runs always run everything. `ci-result` always reports, so
+# it is the one check to require in branch protection.
+#
+# Triggers: pull requests, pushes to main, manual runs (Actions tab, any
+# branch), and merge-queue checks. Feature branches are tested through their
+# PR, so a branch with an open PR is not built twice. `edited` is included so
+# a PR whose base changes (e.g. a stacked PR retargeted to main) is
+# re-classified against its new base; editing a PR's description also re-runs
+# CI, which is wasteful but never wrong.
+#
+# Concurrency: a newer run for the same PR cancels the older one. Every other
+# run (pushes to main, manual runs) gets its own group, so none is ever
+# cancelled or dropped from the queue.
 on:
   push:
+    branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, edited]
+  workflow_dispatch:
+  merge_group:
+
+concurrency:
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+      core: ${{ steps.filter.outputs.core }}
+      viewer: ${{ steps.filter.outputs.viewer }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Self-test the classifier
+        run: bash .github/scripts/test-ci-changes.sh
+      - name: Detect what changed
+        id: filter
+        shell: bash   # bash -eo pipefail: a failing script fails this step
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          # PRs are compared with the first parent of the merge commit that
+          # actions/checkout tests (exactly the PR's changes against its
+          # current base); pushes to main, manual runs and merge-queue
+          # checks always run everything.
+          case "$EVENT" in
+            pull_request) base=$(git rev-parse -q --verify 'HEAD^1' || echo "$PR_BASE") ;;
+            *) base="" ;;
+          esac
+          echo "Comparing ${base:-<none: run everything>}..HEAD"
+          bash .github/scripts/ci-changes.sh "$base" HEAD | tee -a "$GITHUB_OUTPUT"
+
   test:
+    needs: changes
+    # Fail-safe: anything but an explicit 'false' (e.g. a missing output)
+    # runs the work.
+    if: needs.changes.outputs.rust != 'false'
     strategy:
       fail-fast: false
       matrix:
@@ -24,8 +83,33 @@ jobs:
       - name: Test (release)
         run: cargo test --release -p accrete-core -p accrete-cli -p accrete-viz
       - name: Test (debug; must match the same golden hashes)
+        if: needs.changes.outputs.core != 'false'
         run: cargo test -p accrete-core
-      - name: Build viewer
-        run: cargo build --release -p accrete-viewer
+      - name: Build and test viewer
+        if: needs.changes.outputs.viewer != 'false'
+        run: |
+          cargo build --release -p accrete-viewer
+          cargo test --release -p accrete-viewer
       - name: Headless smoke run
         run: cargo run --release -p accrete-cli -- run --seed 1 --days 30 --every 10 --check -o results
+
+  ci-result:
+    needs: [changes, test]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summarize
+        shell: bash
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          RUST: ${{ needs.changes.outputs.rust }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          echo "changes: $CHANGES (rust=$RUST), test: $TEST"
+          [ "$CHANGES" = success ] || exit 1
+          # The classifier must have said something explicit.
+          case "$RUST" in true | false) ;; *) exit 1 ;; esac
+          case "$TEST" in
+            success | skipped) ;;   # skipped = nothing Rust-related changed
+            *) exit 1 ;;
+          esac

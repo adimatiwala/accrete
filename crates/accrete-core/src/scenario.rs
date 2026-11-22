@@ -215,6 +215,7 @@ impl Scenario {
             piles: Vec::new(),
             vis: Visibility::default(),
             homes_at: Vec::new(),
+            disruption_at: Vec::new(),
         };
         for f in &self.food {
             let p = Pos::new(f.at[0], f.at[1]);

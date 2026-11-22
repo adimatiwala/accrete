@@ -96,6 +96,8 @@ pub struct DailyMetrics {
     pub mean_home_age_days: f32,
     /// Share of land tiles under an active drought.
     pub drought_area: f32,
+    /// Tiles under an active route disruption.
+    pub disrupted_tiles: u32,
     pub settlement_candidates: u32,
     pub hamlets: u32,
     pub villages: u32,
@@ -163,6 +165,7 @@ impl DailyMetrics {
             "specialization",
             "mean_home_age_days",
             "drought_area",
+            "disrupted_tiles",
             "settlement_candidates",
             "hamlets",
             "villages",
@@ -235,6 +238,7 @@ impl DailyMetrics {
             format!("{:.3}", self.specialization),
             format!("{:.1}", self.mean_home_age_days),
             format!("{:.4}", self.drought_area),
+            self.disrupted_tiles.to_string(),
             self.settlement_candidates.to_string(),
             self.hamlets.to_string(),
             self.villages.to_string(),

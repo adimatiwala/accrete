@@ -5,14 +5,19 @@
 //! only calls `Simulation::step`).
 //!
 //! ```text
-//! accrete-viewer [--seed S] [--config FILE] [--day D]
-//!                [--play] [--select AGENT]
+//! accrete-viewer [--seed S] [--config FILE] [--day D] [--load SNAPSHOT]
+//!                [--play] [--select AGENT] [--intervene N [--view-b]]
 //!                [--screenshot out.png [--frames N]]   # render and exit
 //! ```
 //!
 //! Controls: Space pause · `.` step · `+`/`-` speed · Tab / 1-0 overlays ·
 //! WASD/arrows/right-drag pan · wheel zoom · click to inspect · F follow ·
 //! G regenerate (random seed) · S type a seed · H help.
+//!
+//! Experiments (accrete.md, Week 4 Day 5): K save a snapshot · L reload the
+//! last snapshot · I choose an intervention · B branch: run a control and the
+//! intervention side by side from now · V switch the branch on screen ·
+//! X drop the branch. Interventions change world conditions only.
 
 use std::path::PathBuf;
 
@@ -44,10 +49,16 @@ struct Args {
     seed: u64,
     config: Config,
     day: u32,
+    load: Option<PathBuf>,
+    intervene: Option<usize>,
+    view_b: bool,
     screenshot: Option<PathBuf>,
     frames: u32,
     select: Option<u32>,
     play: bool,
+    /// `--seed` or `--config` given: these describe a new world, so they
+    /// conflict with `--load`.
+    new_world_args: bool,
 }
 
 fn parse_args() -> Args {
@@ -55,17 +66,24 @@ fn parse_args() -> Args {
         seed: 1,
         config: Config::default(),
         day: 0,
+        load: None,
+        intervene: None,
+        view_b: false,
         screenshot: None,
         frames: 3,
         select: None,
         play: false,
+        new_world_args: false,
     };
     let argv: Vec<String> = std::env::args().skip(1).collect();
     let mut i = 0;
     while i < argv.len() {
         let next = argv.get(i + 1).cloned().unwrap_or_default();
         match argv[i].as_str() {
-            "--seed" => a.seed = parse_seed(&next),
+            "--seed" => {
+                a.seed = parse_seed(&next);
+                a.new_world_args = true;
+            }
             "--day" => a.day = next.parse().unwrap_or(0),
             "--frames" => a.frames = next.parse().unwrap_or(3),
             "--select" => a.select = next.parse().ok(),
@@ -74,9 +92,25 @@ fn parse_args() -> Args {
                 i -= 1; // flag takes no value
             }
             "--screenshot" => a.screenshot = Some(PathBuf::from(&next)),
+            "--load" => a.load = Some(PathBuf::from(&next)),
+            "--intervene" => match next.parse::<usize>() {
+                Ok(k) if k < INTERVENTIONS.len() => a.intervene = Some(k),
+                _ => {
+                    eprintln!(
+                        "error: --intervene expects 0..={}, got {next:?}",
+                        INTERVENTIONS.len() - 1
+                    );
+                    std::process::exit(2);
+                }
+            },
+            "--view-b" => {
+                a.view_b = true;
+                i -= 1;
+            }
             "--config" => {
                 let text = std::fs::read_to_string(&next).expect("read config");
                 a.config = Config::from_toml_str(&text).expect("parse config");
+                a.new_world_args = true;
             }
             other => {
                 eprintln!("unknown argument {other}");
@@ -85,6 +119,10 @@ fn parse_args() -> Args {
         }
         i += 2;
     }
+    if a.load.is_some() && a.new_world_args {
+        eprintln!("error: --seed and --config describe a new world; a --load snapshot has its own");
+        std::process::exit(2);
+    }
     a
 }
 
@@ -92,6 +130,56 @@ enum Selection {
     None,
     Tile(Pos),
     Agent(u32),
+}
+
+/// Intervention presets for branching from the viewer. Each one changes only
+/// world conditions (a scripted drought, a route disruption, or a regrowth
+/// rate), starting on the day the branch is made.
+const INTERVENTIONS: [&str; 4] = [
+    "drought around the selected tile (r 16, 60 days, -60% regrowth)",
+    "cut the 20 busiest routes (20 days)",
+    "flood around the selected tile (r 3, 30 days, impassable)",
+    "halve food regrowth from now on",
+];
+
+fn intervention_config(base: &Config, which: usize, day: u32, at: Pos) -> Config {
+    use accrete_core::config::{DisruptionKind, ScriptedDisruption, ScriptedDrought};
+    let mut c = base.clone();
+    let disruption = |radius: u32, busiest: u32, days: u32| ScriptedDisruption {
+        start_day: day,
+        days,
+        kind: DisruptionKind::Block,
+        slow_factor: 3,
+        center: [at.x, at.y],
+        radius,
+        busiest_tiles: busiest,
+    };
+    match which {
+        0 => c.weather.scripted.push(ScriptedDrought {
+            start_day: day,
+            days: 60,
+            center: [at.x, at.y],
+            radius: 16,
+            severity: 0.6,
+        }),
+        1 => c.disruption.scripted.push(disruption(0, 20, 20)),
+        2 => c.disruption.scripted.push(disruption(3, 0, 30)),
+        _ => c.resources.food_regrowth *= 0.5,
+    }
+    c
+}
+
+/// A second simulation running in lockstep with the first, for comparison.
+struct Branch {
+    /// The simulation not on screen (control or intervention).
+    other: Simulation,
+    /// Whether the intervention branch is the one on screen.
+    viewing_intervention: bool,
+    intervention: usize,
+    from_day: u32,
+    /// Next agent id at the split: agents with `id < from_next_id` exist on
+    /// both sides with the same identity; later ids are branch-local newborns.
+    from_next_id: u32,
 }
 
 struct App {
@@ -111,6 +199,10 @@ struct App {
     help: bool,
     seed_entry: Option<String>,
     last_drag: Option<Vec2>,
+    branch: Option<Branch>,
+    intervention: usize,
+    last_snapshot: Option<PathBuf>,
+    status: Option<(String, f64)>,
 }
 
 impl App {
@@ -134,12 +226,178 @@ impl App {
             help: false,
             seed_entry: None,
             last_drag: None,
+            branch: None,
+            intervention: 0,
+            last_snapshot: None,
+            status: None,
         };
         app.fit();
         app
     }
 
+    /// Start from a snapshot file.
+    fn from_snapshot(path: &std::path::Path) -> Result<Self, String> {
+        let sim = Simulation::load_snapshot(path)?;
+        let mut app = App::new(sim.world.seed, sim.config.clone());
+        app.apply_loaded_sim(sim);
+        app.last_snapshot = Some(path.to_path_buf());
+        app.refresh_texture();
+        app.fit();
+        Ok(app)
+    }
+
+    fn say(&mut self, msg: impl Into<String>) {
+        self.status = Some((msg.into(), get_time()));
+    }
+
+    /// The tile interventions centre on: the selected tile or agent, else
+    /// the middle of the map.
+    fn focus(&self) -> Pos {
+        match self.selection {
+            Selection::Tile(p) => p,
+            Selection::Agent(id) => self.sim.agent(id).map_or(self.centre(), |a| a.pos),
+            Selection::None => self.centre(),
+        }
+    }
+
+    fn centre(&self) -> Pos {
+        let d = self.sim.world.dims;
+        Pos::new(d.width as i32 / 2, d.height as i32 / 2)
+    }
+
+    fn save_snapshot(&mut self) {
+        let side = match &self.branch {
+            Some(b) if b.viewing_intervention => "_intervention",
+            Some(_) => "_control",
+            None => "",
+        };
+        let path = PathBuf::from("results").join(format!(
+            "viewer_seed{}_day{:03}_t{}{side}.snap.json",
+            self.seed,
+            self.sim.day(),
+            self.sim.tick
+        ));
+        match self.sim.save_snapshot(&path) {
+            Ok(()) => {
+                self.say(format!("saved {}", path.display()));
+                self.last_snapshot = Some(path);
+            }
+            Err(e) => self.say(format!("save failed: {e}")),
+        }
+    }
+
+    fn reload_snapshot(&mut self) {
+        let Some(path) = self.last_snapshot.clone() else {
+            self.say("no snapshot yet: press K to save one");
+            return;
+        };
+        match Simulation::load_snapshot(&path) {
+            Ok(sim) => {
+                let note = if sim.config.differs_in_results(&self.config) {
+                    " - it carries an intervention"
+                } else {
+                    ""
+                };
+                self.apply_loaded_sim(sim);
+                self.branch = None;
+                self.keep_selection_if_present();
+                self.refresh_texture();
+                self.say(format!(
+                    "reloaded {} (day {}){note}",
+                    path.display(),
+                    self.sim.day()
+                ));
+            }
+            Err(e) => self.say(format!("load failed: {e}")),
+        }
+    }
+
+    /// Mirror `from_snapshot`: G/S must not replay scripted interventions
+    /// pinned to this world's days and tiles.
+    fn apply_loaded_sim(&mut self, sim: Simulation) {
+        self.seed = sim.world.seed;
+        self.config = sim.config.clone();
+        self.config.weather.scripted.clear();
+        self.config.disruption.scripted.clear();
+        self.sim = sim;
+    }
+
+    /// Branch from the current state: the simulation on screen becomes the
+    /// control, and an identical copy gets the chosen intervention.
+    fn start_branch(&mut self) -> Result<(), String> {
+        let copy = match Simulation::from_snapshot_json(&self.sim.snapshot_json()) {
+            Ok(s) => s,
+            Err(e) => {
+                self.say(format!("branch failed: {e}"));
+                return Err(e);
+            }
+        };
+        let day = self.sim.day();
+        let cfg = intervention_config(&self.sim.config, self.intervention, day, self.focus());
+        if !cfg.differs_in_results(&self.sim.config) {
+            let e = "intervention does not change results (e.g. food regrowth is already 0)".into();
+            self.say(format!("branch failed: {e}"));
+            return Err(e);
+        }
+        let mut intervention = copy;
+        if let Err(e) = intervention.set_config(cfg) {
+            self.say(format!("branch failed: {e}"));
+            return Err(e);
+        }
+        // Show the intervention; the control keeps running alongside.
+        let from_next_id = self.sim.next_id;
+        let control = std::mem::replace(&mut self.sim, intervention);
+        self.branch = Some(Branch {
+            other: control,
+            viewing_intervention: true,
+            intervention: self.intervention,
+            from_day: day,
+            from_next_id,
+        });
+        self.refresh_texture();
+        self.say(format!(
+            "branched on day {day}: {}",
+            INTERVENTIONS[self.intervention]
+        ));
+        Ok(())
+    }
+
+    fn switch_branch(&mut self) {
+        if let Some(b) = self.branch.as_mut() {
+            std::mem::swap(&mut self.sim, &mut b.other);
+            b.viewing_intervention = !b.viewing_intervention;
+            self.keep_selection_if_present();
+            self.refresh_texture();
+        } else {
+            self.say("no branch: press B to branch");
+        }
+    }
+
+    /// Each branch numbers its own newborns, so an agent id from one
+    /// simulation may be someone else, or no one, in the other. Keep the
+    /// selection only for agents that existed before the simulations split
+    /// (`id < from_next_id`).
+    fn keep_selection_if_present(&mut self) {
+        if let Selection::Agent(id) = self.selection {
+            let split = self.branch.as_ref().map(|b| b.from_next_id);
+            let same_person = split.is_none_or(|n| id < n);
+            if !(same_person && self.sim.agent(id).is_some()) {
+                self.selection = Selection::None;
+                self.follow = false;
+            }
+        }
+    }
+
+    /// Run one tick, keeping a branch in lockstep.
+    fn step_all(&mut self) {
+        self.sim.step();
+        if let Some(b) = self.branch.as_mut() {
+            b.other.step();
+        }
+    }
+
     fn regenerate(&mut self, seed: u64) {
+        // A new world drops any branch.
         let config = self.config.clone();
         *self = App {
             help: self.help,
@@ -208,7 +466,39 @@ impl App {
             self.paused = !self.paused;
         }
         if is_key_pressed(KeyCode::Period) {
-            self.sim.step();
+            self.step_all();
+        }
+        if is_key_pressed(KeyCode::K) {
+            self.save_snapshot();
+        }
+        if is_key_pressed(KeyCode::L) {
+            self.reload_snapshot();
+        }
+        if is_key_pressed(KeyCode::I) {
+            self.intervention = (self.intervention + 1) % INTERVENTIONS.len();
+            self.say(format!(
+                "intervention: {}",
+                INTERVENTIONS[self.intervention]
+            ));
+        }
+        if is_key_pressed(KeyCode::B) {
+            if self.branch.is_some() {
+                self.say("already branched: X drops the branch");
+            } else {
+                // A failure is reported on screen.
+                let _ = self.start_branch();
+            }
+        }
+        if is_key_pressed(KeyCode::V) {
+            self.switch_branch();
+        }
+        if is_key_pressed(KeyCode::X) && self.branch.is_some() {
+            if self.branch.as_ref().is_some_and(|b| b.viewing_intervention) {
+                self.switch_branch();
+            }
+            self.branch = None;
+            self.refresh_texture();
+            self.say("branch dropped; showing the control");
         }
         if is_key_pressed(KeyCode::Equal) || is_key_pressed(KeyCode::KpAdd) {
             self.speed = (self.speed + 1).min(SPEEDS.len() - 1);
@@ -315,12 +605,13 @@ impl App {
         }
         self.accumulator += SPEEDS[self.speed] * get_frame_time().min(0.1);
         let mut budget = 0;
-        while self.accumulator >= 1.0 && budget < 2000 {
-            self.sim.step();
+        let budget_max = if self.branch.is_some() { 1000 } else { 2000 };
+        while self.accumulator >= 1.0 && budget < budget_max {
+            self.step_all();
             self.accumulator -= 1.0;
             budget += 1;
         }
-        if budget == 2000 {
+        if budget == budget_max {
             self.accumulator = 0.0;
         }
         // Resource overlays change daily; others only on regenerate.
@@ -396,6 +687,19 @@ impl App {
                 2.0,
                 Color::from_rgba(255, 140, 0, 200),
             );
+        }
+        // Route disruptions (blocked or slowed tiles).
+        for d in &self.sim.disruptions.active {
+            let col = match d.effect {
+                accrete_core::world::Disruption::Blocked => Color::from_rgba(230, 30, 30, 170),
+                _ => Color::from_rgba(230, 140, 30, 150),
+            };
+            for &t in &d.tiles {
+                let o = self.offset + vec2(0.0, 0.0);
+                let p = self.sim.world.dims.pos(t);
+                let tl = o + vec2(p.x as f32, p.y as f32) * z;
+                draw_rectangle(tl.x, tl.y, z.max(2.0), z.max(2.0), col);
+            }
         }
         // Detected settlements (measurement only), labelled by class and size.
         for st in &self.sim.settlements.tracked {
@@ -533,6 +837,44 @@ impl App {
             self.overlay.name(),
         );
         draw_text(&text, 10.0, 21.0, 20.0, WHITE);
+        let mut right = String::new();
+        if let Some(b) = &self.branch {
+            right = format!(
+                "BRANCH day {}: {} | viewing {} (V switch, X drop)",
+                b.from_day,
+                INTERVENTIONS[b.intervention],
+                if b.viewing_intervention {
+                    "intervention"
+                } else {
+                    "control"
+                }
+            );
+        }
+        if let Some((msg, t)) = &self.status {
+            if get_time() - t < 6.0 {
+                if !right.is_empty() {
+                    right.push_str("  |  ");
+                }
+                right.push_str(msg);
+            }
+        }
+        if !right.is_empty() {
+            let area = self.map_area();
+            draw_rectangle(
+                area.x,
+                area.y,
+                area.w,
+                24.0,
+                Color::from_rgba(40, 10, 10, 210),
+            );
+            draw_text(
+                &right,
+                area.x + 10.0,
+                area.y + 17.0,
+                18.0,
+                Color::from_rgba(255, 200, 120, 255),
+            );
+        }
     }
 
     fn draw_panel(&self) {
@@ -754,7 +1096,7 @@ impl App {
             ),
             dim,
         );
-        let mp = accrete_core::world::movement::enter_cost(t, &self.sim.config.movement);
+        let mp = w.enter_cost(p, &self.sim.config.movement);
         line(
             &format!(
                 "move cost {}  traffic {:.1}  visible tiles {}",
@@ -791,17 +1133,26 @@ impl App {
     fn draw_chart(&self, x: f32, y: f32, w: f32, h: f32) {
         draw_rectangle(x, y, w, h, Color::from_rgba(20, 23, 29, 255));
         let m = &self.sim.metrics;
-        draw_text(
-            "pop (white), homes (gold), hunger x500 (red), clustering R x100 (cyan)",
-            x + 4.0,
-            y + 14.0,
-            14.0,
-            GRAY,
-        );
+        let legend = if self.branch.is_some() {
+            "pop (white; other branch orange), homes, hunger x500, R x100"
+        } else {
+            "pop (white), homes, hunger x500, R x100"
+        };
+        draw_text(legend, x + 4.0, y + 14.0, 14.0, GRAY);
         if m.len() < 2 {
             return;
         }
-        let max_pop = m.iter().map(|d| d.population).max().unwrap_or(1).max(10) as f32;
+        let other = self
+            .branch
+            .as_ref()
+            .map_or(&[][..], |b| &b.other.metrics[..]);
+        let max_pop = m
+            .iter()
+            .chain(other)
+            .map(|d| d.population)
+            .max()
+            .unwrap_or(1)
+            .max(10) as f32;
         let n = m.len() as f32;
         let plot = |f: &dyn Fn(&accrete_core::simulation::metrics::DailyMetrics) -> f32,
                     color: Color| {
@@ -817,6 +1168,43 @@ impl App {
             }
         };
         plot(&|d| d.population as f32, WHITE);
+        if let Some(b) = &self.branch {
+            // The other branch's population, dashed orange.
+            let om = &b.other.metrics;
+            let mut prev: Option<Vec2> = None;
+            for (i, d) in om.iter().enumerate() {
+                let px = x + 4.0 + (w - 8.0) * i as f32 / (n - 1.0).max(1.0);
+                let py = y + h - 6.0 - (h - 26.0) * (d.population as f32 / max_pop).min(1.0);
+                let p = vec2(px, py);
+                if let Some(q) = prev {
+                    if i % 2 == 0 {
+                        draw_line(q.x, q.y, p.x, p.y, 1.5, Color::from_rgba(255, 150, 60, 255));
+                    }
+                }
+                prev = Some(p);
+            }
+            let (a, bpop) = (self.sim.population(), b.other.population());
+            let (ctrl, intv) = if b.viewing_intervention {
+                (bpop, a)
+            } else {
+                (a, bpop)
+            };
+            draw_text(
+                format!(
+                    "{} | control {ctrl} vs intervention {intv} ({:+})",
+                    if b.viewing_intervention {
+                        "viewing intervention"
+                    } else {
+                        "viewing control"
+                    },
+                    intv as i64 - ctrl as i64
+                ),
+                x + 4.0,
+                y - 6.0,
+                14.0,
+                Color::from_rgba(255, 170, 90, 255),
+            );
+        }
         plot(
             &|d| d.homes_occupied as f32,
             Color::from_rgba(255, 210, 40, 255),
@@ -880,6 +1268,8 @@ impl App {
             "WASD / arrows / right-drag  pan     wheel  zoom",
             "click  inspect agent/tile   F  follow selected agent",
             "C  fit map    G  new random seed    S  type a seed",
+            "K  save snapshot   L  reload it   I  pick intervention",
+            "B  branch (control + intervention)   V  switch   X  drop",
             "Agent colours = current goal (see legend). Homes: white,",
             "gold = has storage, grey = vacant. Juveniles are smaller.",
         ];
@@ -947,16 +1337,40 @@ fn map_texture(sim: &Simulation, overlay: Overlay) -> Texture2D {
 #[macroquad::main(window_conf)]
 async fn main() {
     let args = parse_args();
-    let mut app = App::new(args.seed, args.config.clone());
-    if args.day > 0 {
-        app.sim.run(u64::from(args.day) * TICKS_PER_DAY);
+    let mut app = match &args.load {
+        Some(path) => App::from_snapshot(path).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(1)
+        }),
+        None => App::new(args.seed, args.config.clone()),
+    };
+    // `--day` is the day to show; a loaded snapshot may already be past it.
+    let target = u64::from(args.day) * TICKS_PER_DAY;
+    if target > app.sim.tick {
+        app.sim.run(target - app.sim.tick);
         app.refresh_texture();
+    } else if args.load.is_some() && args.day > 0 && target < app.sim.tick {
+        eprintln!(
+            "warning: the snapshot is already at day {}, past --day {}",
+            app.sim.day(),
+            args.day
+        );
     }
     if let Some(id) = args.select {
         app.selection = Selection::Agent(id);
     } else if args.screenshot.is_some() {
         if let Some(a) = app.sim.agents.get(app.sim.agents.len() / 2) {
             app.selection = Selection::Agent(a.id);
+        }
+    }
+    if let Some(k) = args.intervene {
+        app.intervention = k;
+        if let Err(e) = app.start_branch() {
+            eprintln!("error: --intervene {k}: {e}");
+            std::process::exit(1);
+        }
+        if !args.view_b {
+            app.switch_branch();
         }
     }
     app.paused = !args.play;
@@ -973,5 +1387,46 @@ async fn main() {
             }
         }
         next_frame().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every preset is a valid intervention that starts on the branch day and
+    /// takes effect, and branching leaves the control exactly as an
+    /// unbranched run.
+    #[test]
+    fn presets_branch_without_touching_the_control() {
+        let mut base = Simulation::new(1, Config::default());
+        base.run(20 * TICKS_PER_DAY + 5);
+        let mut plain = Simulation::from_snapshot_json(&base.snapshot_json()).unwrap();
+        plain.run(3 * TICKS_PER_DAY);
+        let at = base.agents[0].pos;
+        for k in 0..INTERVENTIONS.len() {
+            let mut control = Simulation::from_snapshot_json(&base.snapshot_json()).unwrap();
+            let mut branch = Simulation::from_snapshot_json(&control.snapshot_json()).unwrap();
+            let cfg = intervention_config(&control.config, k, control.day(), at);
+            assert!(cfg.differs_in_results(&control.config), "preset {k}");
+            for d in &cfg.weather.scripted {
+                assert_eq!(d.start_day, control.day(), "preset {k}");
+            }
+            for d in &cfg.disruption.scripted {
+                assert_eq!(d.start_day, control.day(), "preset {k}");
+            }
+            branch.set_config(cfg).expect("preset accepted");
+            for _ in 0..3 * TICKS_PER_DAY {
+                control.step();
+                branch.step();
+            }
+            assert_eq!(control.tick, branch.tick);
+            assert_eq!(control.state_hash(), plain.state_hash(), "preset {k}");
+            assert_ne!(
+                branch.state_hash(),
+                plain.state_hash(),
+                "preset {k} had no effect"
+            );
+        }
     }
 }

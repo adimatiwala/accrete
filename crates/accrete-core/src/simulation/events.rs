@@ -122,6 +122,15 @@ pub enum EventKind {
         scripted: bool,
     },
     DroughtEnded,
+    /// A scripted route disruption began on `tiles` tiles for `days` days.
+    RouteDisrupted {
+        tiles: u32,
+        days: u32,
+        effect: crate::world::Disruption,
+    },
+    RouteRestored {
+        tiles: u32,
+    },
     Pathology {
         kind: PathologyKind,
     },

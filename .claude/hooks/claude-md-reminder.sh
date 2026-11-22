@@ -31,7 +31,7 @@ changed=$(
 printf '%s\n' "$changed" | grep -qx 'CLAUDE.md' && exit 0
 
 # Paths whose changes usually mean CLAUDE.md needs a look.
-watched=$(printf '%s\n' "$changed" | grep -E '^(Cargo\.toml|rust-toolchain\.toml|clippy\.toml|\.github/workflows/.*|crates/[^/]+/Cargo\.toml|crates/accrete-cli/src/main\.rs|crates/accrete-viewer/src/main\.rs|crates/accrete-core/src/(lib|rng|hash|config|scenario)\.rs|crates/accrete-core/src/simulation/(mod|engine)\.rs|crates/accrete-core/src/agents/decision\.rs|crates/accrete-core/tests/common/.*|docs/DESIGN\.md)$')
+watched=$(printf '%s\n' "$changed" | grep -E '^(Cargo\.toml|rust-toolchain\.toml|clippy\.toml|\.github/(workflows|scripts)/.*|crates/[^/]+/Cargo\.toml|crates/accrete-cli/src/main\.rs|crates/accrete-viewer/src/main\.rs|crates/accrete-core/src/(lib|rng|hash|config|scenario)\.rs|crates/accrete-core/src/simulation/(mod|engine)\.rs|crates/accrete-core/src/agents/decision\.rs|crates/accrete-core/tests/common/.*|docs/DESIGN\.md)$')
 [ -n "$watched" ] || exit 0
 
 # Remind once per distinct set of watched changes.

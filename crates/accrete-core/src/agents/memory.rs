@@ -4,7 +4,10 @@
 //! |---|---|---|
 //! | Known tiles | 1 bit per tile | Tiles ever seen; terrain is static, so seeing a tile once reveals its terrain. |
 //! | Resource memories | 64 entries | Position, resource, amount seen, tick seen. Partitioned by resource type (food 40, wood 16, stone 8) so plentiful wood never crowds out food. When a pool is full, the entry with the lowest `amount × freshness` is replaced (ties: lowest position). |
-//! | Changed tiles | 32 entries | Tiles seen to differ from bare terrain (trails, roads). |
+//! | Changed tiles | 32 entries | Trails and roads seen on a tile. Oldest replaced. |
+//! | Disruptions | 1,024 entries | Route disruptions seen (floods, landslides). Sorted by
+//! |  |  | tile for fast lookup; when full, the entry farthest from the agent is replaced.
+//! |  |  | Kept apart from trails/roads so a large flood never crowds them out. |
 //! | Known homes | 16 entries | Homes seen, their resident count, and whether they had storage. Oldest replaced. |
 //!
 //! Decisions read only this memory plus what the agent currently sees.
@@ -15,7 +18,7 @@ use crate::config::MemoryConfig;
 use crate::geom::{Dims, Pos};
 use crate::hash::{StableHash, StableHasher};
 use crate::inventory::Resource;
-use crate::world::{HomeId, PathLevel};
+use crate::world::{Disruption, HomeId, PathLevel};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResourceMemory {
@@ -56,6 +59,14 @@ pub struct ChangedTile {
     pub seen_tick: u64,
 }
 
+/// A route disruption the agent last saw on a tile (flood, landslide).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SeenDisruption {
+    pub pos: Pos,
+    pub disruption: Disruption,
+    pub seen_tick: u64,
+}
+
 /// Someone this agent has met, and how fairly they have traded with it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SocialMemory {
@@ -81,6 +92,8 @@ pub struct AgentMemory {
     pub resources: Vec<ResourceMemory>,
     pub homes: Vec<HomeMemory>,
     pub changed: Vec<ChangedTile>,
+    /// Route disruptions, kept sorted by `pos` so lookups are a binary search.
+    pub disruptions: Vec<SeenDisruption>,
     /// Food in the agent's own home chests when it last looked.
     pub home_food_seen: f32,
     /// Free chest weight at home when it last looked.
@@ -110,6 +123,7 @@ impl AgentMemory {
             resources: Vec::new(),
             homes: Vec::new(),
             changed: Vec::new(),
+            disruptions: Vec::new(),
             home_food_seen: 0.0,
             home_room_seen: 0.0,
             failed_targets: Vec::new(),
@@ -229,12 +243,28 @@ impl AgentMemory {
         self.known_count
     }
 
-    fn slots(r: Resource, c: &MemoryConfig) -> usize {
+    pub fn slots(r: Resource, c: &MemoryConfig) -> usize {
         match r {
             Resource::Food => c.food_slots as usize,
             Resource::Wood => c.wood_slots as usize,
             Resource::Stone => c.stone_slots as usize,
         }
+    }
+
+    /// Replace all resource memories at once (omniscient baseline only).
+    /// `entries` must already respect the per-type pool sizes; an entry for a
+    /// place the agent recently failed to reach keeps that cooldown.
+    pub fn set_resources(&mut self, mut entries: Vec<ResourceMemory>) {
+        for e in entries.iter_mut() {
+            if let Some(old) = self
+                .resources
+                .iter()
+                .find(|m| m.pos == e.pos && m.resource == e.resource)
+            {
+                e.unreachable_until = old.unreachable_until;
+            }
+        }
+        self.resources = entries;
     }
 
     /// Record an observation of `amount` of `r` at `p`.
@@ -524,6 +554,9 @@ impl AgentMemory {
         self.homes.retain(|h| h.home != home);
     }
 
+    /// Record a trail or road the agent sees. A tile that looks bare again is
+    /// forgotten. Disruptions use [`note_disruption`], so a flood never
+    /// crowds roads out of this pool.
     pub fn note_changed(&mut self, pos: Pos, level: PathLevel, tick: u64, cap: usize) {
         if let Some(i) = self.changed.iter().position(|c| c.pos == pos) {
             if level == PathLevel::None {
@@ -559,11 +592,104 @@ impl AgentMemory {
         }
     }
 
+    /// Record a route disruption the agent sees. Cleared when the tile looks
+    /// normal again. Kept sorted by position. When full, the entry farthest
+    /// from `at` (the agent's position) is replaced, ties broken by position.
+    pub fn note_disruption(
+        &mut self,
+        pos: Pos,
+        disruption: Disruption,
+        tick: u64,
+        at: Pos,
+        cap: usize,
+    ) {
+        match self.disruptions.binary_search_by_key(&pos, |d| d.pos) {
+            Ok(i) => {
+                if disruption == Disruption::None {
+                    self.disruptions.remove(i);
+                } else {
+                    self.disruptions[i].disruption = disruption;
+                    self.disruptions[i].seen_tick = tick;
+                }
+            }
+            Err(i) => {
+                if disruption == Disruption::None || cap == 0 {
+                    return;
+                }
+                let e = SeenDisruption {
+                    pos,
+                    disruption,
+                    seen_tick: tick,
+                };
+                if self.disruptions.len() < cap {
+                    self.disruptions.insert(i, e);
+                } else {
+                    let (wi, far) = self
+                        .disruptions
+                        .iter()
+                        .enumerate()
+                        .max_by(|a, b| {
+                            a.1.pos
+                                .dist2(at)
+                                .cmp(&b.1.pos.dist2(at))
+                                .then(a.1.pos.cmp(&b.1.pos))
+                        })
+                        .map(|(i, d)| (i, d.pos))
+                        .expect("non-empty");
+                    // Keep the nearest set: a farther (or equal, tied by pos)
+                    // sighting is ignored.
+                    let new_farther = pos
+                        .dist2(at)
+                        .cmp(&far.dist2(at))
+                        .then(pos.cmp(&far))
+                        .is_ge();
+                    if new_farther {
+                        return;
+                    }
+                    self.disruptions.remove(wi);
+                    let i = self
+                        .disruptions
+                        .binary_search_by_key(&pos, |d| d.pos)
+                        .unwrap_err();
+                    self.disruptions.insert(i, e);
+                }
+            }
+        }
+    }
+
     pub fn believed_path(&self, p: Pos) -> PathLevel {
         self.changed
             .iter()
             .find(|c| c.pos == p)
             .map_or(PathLevel::None, |c| c.path_level)
+    }
+
+    /// The route disruption the agent last saw on `p`.
+    pub fn believed_disruption(&self, p: Pos) -> Disruption {
+        self.disruptions
+            .binary_search_by_key(&p, |d| d.pos)
+            .ok()
+            .map_or(Disruption::None, |i| self.disruptions[i].disruption)
+    }
+
+    /// Drop the farthest entries until the pool fits `cap` (e.g. after
+    /// `set_config` lowers `memory.disruption_slots`).
+    pub fn trim_disruptions(&mut self, at: Pos, cap: usize) {
+        while self.disruptions.len() > cap {
+            let wi = self
+                .disruptions
+                .iter()
+                .enumerate()
+                .max_by(|a, b| {
+                    a.1.pos
+                        .dist2(at)
+                        .cmp(&b.1.pos.dist2(at))
+                        .then(a.1.pos.cmp(&b.1.pos))
+                })
+                .map(|(i, _)| i)
+                .expect("non-empty");
+            self.disruptions.remove(wi);
+        }
     }
 
     pub fn mark_unreachable(&mut self, p: Pos, until: u64) {
@@ -627,6 +753,7 @@ impl AgentMemory {
         }
         m.homes = parent.homes.clone();
         m.changed = parent.changed.clone();
+        m.disruptions = parent.disruptions.clone();
         m.home_food_seen = parent.home_food_seen;
         m.home_room_seen = parent.home_room_seen;
         m
@@ -666,6 +793,12 @@ impl StableHash for AgentMemory {
             c.pos.stable_hash(h);
             h.u8(c.path_level as u8);
             h.u64(c.seen_tick);
+        }
+        h.len(self.disruptions.len());
+        for d in &self.disruptions {
+            d.pos.stable_hash(h);
+            h.u8(d.disruption.code());
+            h.u64(d.seen_tick);
         }
         h.f32(self.home_food_seen);
         h.f32(self.home_room_seen);
@@ -743,6 +876,15 @@ mod tests {
             parent.learn(p);
             parent.note_resource(p, Resource::Food, 1.0 + i as f32, 0, &c, 120.0);
         }
+        // Disruptions outside the newborn known radius are still inherited.
+        parent.note_disruption(Pos::new(39, 39), Disruption::Blocked, 5, Pos::new(0, 0), 16);
+        parent.note_disruption(
+            Pos::new(1, 2),
+            Disruption::Slowed { factor: 3 },
+            6,
+            Pos::new(0, 0),
+            16,
+        );
         let child = AgentMemory::inherit_from(&parent, dims, Pos::new(10, 5), 16, 0.5, 10, 120.0);
         assert_eq!(child.resources.len(), 5);
         for r in &child.resources {
@@ -758,5 +900,85 @@ mod tests {
             let p = dims.pos(i);
             assert!(!child.knows(p) || parent.knows(p));
         }
+        assert_eq!(child.disruptions, parent.disruptions);
+        assert_eq!(
+            child.believed_disruption(Pos::new(39, 39)),
+            Disruption::Blocked
+        );
+    }
+
+    #[test]
+    fn floods_do_not_crowd_out_roads() {
+        let mut m = AgentMemory::new(Dims::new(32, 32));
+        let road = Pos::new(1, 1);
+        m.note_changed(road, PathLevel::Road, 0, 32);
+        assert_eq!(m.believed_path(road), PathLevel::Road);
+        // More disruptions than the old shared pool of 32.
+        for i in 0..80 {
+            m.note_disruption(
+                Pos::new(i % 16, i / 16 + 2),
+                Disruption::Blocked,
+                i as u64,
+                Pos::new(8, 8),
+                1024,
+            );
+        }
+        assert_eq!(m.disruptions.len(), 80);
+        assert_eq!(m.believed_path(road), PathLevel::Road);
+        assert_eq!(m.changed.len(), 1);
+    }
+
+    #[test]
+    fn disruption_pool_drops_the_farthest_when_full() {
+        let mut m = AgentMemory::new(Dims::new(64, 64));
+        let at = Pos::new(0, 0);
+        for i in 1..=4 {
+            m.note_disruption(Pos::new(i, 0), Disruption::Blocked, i as u64, at, 3);
+        }
+        assert_eq!(m.disruptions.len(), 3);
+        assert_eq!(m.believed_disruption(Pos::new(4, 0)), Disruption::None);
+        assert_eq!(m.believed_disruption(Pos::new(1, 0)), Disruption::Blocked);
+        assert_eq!(m.believed_disruption(Pos::new(2, 0)), Disruption::Blocked);
+        assert_eq!(m.believed_disruption(Pos::new(3, 0)), Disruption::Blocked);
+        // Restoring a tile frees its slot.
+        m.note_disruption(Pos::new(1, 0), Disruption::None, 10, at, 3);
+        assert_eq!(m.believed_disruption(Pos::new(1, 0)), Disruption::None);
+        assert_eq!(m.disruptions.len(), 2);
+    }
+
+    #[test]
+    fn disruption_memory_stays_sorted() {
+        let mut m = AgentMemory::new(Dims::new(16, 16));
+        for &(x, y) in &[(5, 5), (1, 1), (3, 0), (2, 8), (1, 0)] {
+            m.note_disruption(Pos::new(x, y), Disruption::Blocked, 0, Pos::new(0, 0), 16);
+        }
+        assert!(m.disruptions.windows(2).all(|w| w[0].pos < w[1].pos));
+        assert_eq!(m.believed_disruption(Pos::new(3, 0)), Disruption::Blocked);
+    }
+
+    #[test]
+    fn reseeing_a_restored_tile_clears_the_belief() {
+        let mut m = AgentMemory::new(Dims::new(8, 8));
+        let p = Pos::new(2, 2);
+        m.note_disruption(p, Disruption::Blocked, 0, Pos::new(0, 0), 8);
+        assert_eq!(m.believed_disruption(p), Disruption::Blocked);
+        m.note_disruption(p, Disruption::None, 10, Pos::new(0, 0), 8);
+        assert_eq!(m.believed_disruption(p), Disruption::None);
+        assert!(m.disruptions.is_empty());
+    }
+
+    #[test]
+    fn equal_distance_prefers_the_lower_pos() {
+        let mut m = AgentMemory::new(Dims::new(16, 16));
+        let at = Pos::new(0, 0);
+        m.note_disruption(Pos::new(3, 4), Disruption::Blocked, 0, at, 1); // dist2 = 25
+        // Same distance, higher pos: ignored when the pool is full.
+        m.note_disruption(Pos::new(4, 3), Disruption::Blocked, 1, at, 1);
+        assert_eq!(m.believed_disruption(Pos::new(3, 4)), Disruption::Blocked);
+        assert_eq!(m.believed_disruption(Pos::new(4, 3)), Disruption::None);
+        // Same distance, lower pos: replaces the higher one.
+        m.note_disruption(Pos::new(0, 5), Disruption::Blocked, 2, at, 1);
+        assert_eq!(m.believed_disruption(Pos::new(0, 5)), Disruption::Blocked);
+        assert_eq!(m.believed_disruption(Pos::new(3, 4)), Disruption::None);
     }
 }

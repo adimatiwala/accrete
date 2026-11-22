@@ -2,7 +2,6 @@
 //! renderer, so both show exactly the same picture. Rendering never feeds back
 //! into the simulation, so this crate may use any float operations.
 
-use accrete_core::world::movement::enter_cost;
 use accrete_core::world::{Biome, PathLevel, Tile, World};
 use accrete_core::{Config, Pos};
 
@@ -183,7 +182,7 @@ pub fn tile_color(world: &World, config: &Config, p: Pos, overlay: Overlay) -> R
         }
         Overlay::Wood => ramp(t.wood / 40.0, [60, 200, 80]),
         Overlay::Stone => ramp(t.stone / 200.0, [220, 220, 235]),
-        Overlay::MoveCost => match enter_cost(t, &config.movement) {
+        Overlay::MoveCost => match world.enter_cost(p, &config.movement) {
             None => water(),
             Some(c) => viridis(1.0 - ((c as f32 - 5.0) / 75.0).clamp(0.0, 1.0)),
         },

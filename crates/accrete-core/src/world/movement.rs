@@ -14,7 +14,7 @@
 //! All arithmetic is integer, so travel time is exactly reproducible.
 
 use crate::config::MovementConfig;
-use crate::world::{Biome, PathLevel, Tile};
+use crate::world::{Biome, Disruption, PathLevel, Tile};
 
 /// MP to enter `t` by an orthogonal step, or `None` if impassable.
 pub fn enter_cost(t: &Tile, c: &MovementConfig) -> Option<u32> {
@@ -36,6 +36,31 @@ pub fn cost_for(biome: Biome, river: bool, path: PathLevel, c: &MovementConfig) 
         PathLevel::Road => raw / 2,
     };
     Some(modified.max(c.min_mp))
+}
+
+/// Apply a route disruption to an orthogonal entry cost.
+#[inline]
+pub fn with_disruption(cost: Option<u32>, d: Disruption) -> Option<u32> {
+    match d {
+        Disruption::None => cost,
+        Disruption::Slowed { factor } => cost.map(|c| c * u32::from(factor.max(1))),
+        Disruption::Blocked => None,
+    }
+}
+
+/// How many times its normal cost a blocked tile costs to wade through.
+pub const WADE_FACTOR: u32 = 4;
+
+/// Orthogonal entry cost of a step from a tile with disruption `from` into
+/// a tile with undisrupted cost `base` and disruption `to`. A blocked tile
+/// can be entered only from another blocked tile, at `WADE_FACTOR` times its
+/// cost: someone caught in a flood wades out, but nobody wades in.
+#[inline]
+pub fn entry_cost(base: Option<u32>, from: Disruption, to: Disruption) -> Option<u32> {
+    match (from, to) {
+        (Disruption::Blocked, Disruption::Blocked) => base.map(|c| c * WADE_FACTOR),
+        _ => with_disruption(base, to),
+    }
 }
 
 /// Cost of a step into a tile with orthogonal cost `cost`.
@@ -81,5 +106,20 @@ mod tests {
         );
         assert_eq!(cost_for(Biome::Plains, false, PathLevel::Road, &c), Some(5));
         assert_eq!(step_cost(10, true, &c), 14);
+        assert_eq!(with_disruption(Some(10), Disruption::None), Some(10));
+        assert_eq!(
+            with_disruption(Some(10), Disruption::Slowed { factor: 3 }),
+            Some(30)
+        );
+        assert_eq!(with_disruption(Some(10), Disruption::Blocked), None);
+        assert_eq!(
+            with_disruption(None, Disruption::Slowed { factor: 3 }),
+            None
+        );
+        let (b, n) = (Disruption::Blocked, Disruption::None);
+        assert_eq!(entry_cost(Some(10), n, b), None, "nobody wades in");
+        assert_eq!(entry_cost(Some(10), b, b), Some(10 * WADE_FACTOR));
+        assert_eq!(entry_cost(Some(10), b, n), Some(10), "out onto open ground");
+        assert_eq!(entry_cost(None, b, b), None, "water stays water");
     }
 }

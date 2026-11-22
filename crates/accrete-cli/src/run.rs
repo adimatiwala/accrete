@@ -12,38 +12,168 @@ use accrete_viz::{Overlay, goal_color};
 
 use crate::image::Canvas;
 
-#[allow(clippy::too_many_arguments)] // a flat CLI entry point
-pub fn run(
-    seed: u64,
-    config: &Config,
-    days: u32,
-    out: &Path,
-    every: u32,
-    snap_every: u32,
-    label: &str,
-    timelapse: &[u32],
-) {
-    std::fs::create_dir_all(out).expect("create output dir");
+/// Options shared by `run` and `branch`.
+pub struct RunOpts<'a> {
+    /// Days to simulate from the starting state.
+    pub days: u32,
+    pub out: &'a Path,
+    pub every: u32,
+    pub snap_every: u32,
+    /// Write a state snapshot (`*.snap.json`) every N days (0 = none).
+    /// Distinct from `snap_every`, which renders PNG maps.
+    pub save_every: u32,
+    pub label: &'a str,
+    /// Absolute days to capture for the timelapse strip.
+    pub timelapse: &'a [u32],
+    /// Write a snapshot of the final state here.
+    pub save: Option<&'a Path>,
+    /// Stop early when the population dies out. Branch comparisons keep
+    /// going, so both series cover the same days (population 0 after
+    /// extinction; the world keeps changing).
+    pub stop_on_extinction: bool,
+    /// The snapshot this run was loaded from, if any (for its manifest).
+    pub loaded_from: Option<&'a Path>,
+}
+
+/// A run label is used in output file names: it must be a plain name.
+pub fn check_label(label: &str) -> Result<(), String> {
+    if label.is_empty()
+        || label.contains(['/', '\\', ':', ','])
+        || label == "."
+        || label == ".."
+        || label.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "label {label:?} must be a plain file-name part (no path separators or commas)"
+        ));
+    }
+    Ok(())
+}
+
+/// Fail before a long run if a snapshot cannot be written to `path`.
+pub fn check_writable(path: &Path) -> Result<(), String> {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    let existed = path.exists();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    if !existed {
+        let _ = std::fs::remove_file(path);
+    }
+    Ok(())
+}
+
+/// `accrete run` from a fresh world.
+pub fn run(seed: u64, config: &Config, opts: &RunOpts) -> Simulation {
+    std::fs::create_dir_all(opts.out).expect("create output dir");
     let t0 = Instant::now();
-    let mut sim = Simulation::new(seed, config.clone());
+    let sim = Simulation::new(seed, config.clone());
     let gen_ms = t0.elapsed().as_secs_f64() * 1000.0;
     println!(
-        "[{label}] seed {seed}: world {} generated in {gen_ms:.0} ms, {} agents",
+        "[{}] seed {seed}: world {} generated in {gen_ms:.0} ms, {} agents",
+        opts.label,
         hash::hex(sim.world.state_hash()),
         sim.population()
     );
+    drive(sim, opts)
+}
+
+/// Load a snapshot, optionally replacing its config (an intervention), and
+/// print where it resumes.
+pub fn load(path: &Path, config: Option<Config>, label: &str) -> Simulation {
+    let mut sim = Simulation::load_snapshot(path).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(1)
+    });
+    println!(
+        "[{label}] loaded {} (seed {}): day {}, tick {}, {} agents, hash {}",
+        path.display(),
+        sim.world.seed,
+        sim.day(),
+        sim.tick,
+        sim.population(),
+        hash::hex(sim.state_hash())
+    );
+    if let Some(c) = config {
+        if c != sim.config {
+            println!("[{label}] config changed from the snapshot's (intervention)");
+            sim.set_config(c).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(2)
+            });
+        }
+    }
+    sim
+}
+
+/// Simulate `opts.days` days from the current state, print progress, and
+/// export metrics, deaths, maps, and optionally a snapshot.
+pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
+    std::fs::create_dir_all(opts.out).expect("create output dir");
+    let (label, seed, timelapse, out) = (opts.label, sim.world.seed, opts.timelapse, opts.out);
     let t1 = Instant::now();
+    let tick0 = sim.tick;
+    let start_state_hash = hash::hex(sim.state_hash());
+    let start = match opts.loaded_from {
+        Some(p) => crate::manifest::Start::Snapshot {
+            // Absolute, so the manifest works from any directory; and relative
+            // to the output folder, so a moved results folder still works.
+            path: std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf()),
+            relative_path: crate::manifest::relative_to(opts.out, p),
+            // Panic (not process::exit) so a failure under --jobs is caught
+            // by parallel::map_ordered instead of killing sibling seeds.
+            file_hash: crate::manifest::file_hash(p).unwrap_or_else(|e| panic!("{e}")),
+        },
+        None => crate::manifest::Start::Fresh { seed },
+    };
+    // Refuse a conflicting prior manifest *before* --save-every / metrics can
+    // clobber outputs. A shorter prior run is allowed only when it ended extinct
+    // (so a same-command re-run can rewrite); a completed shorter run vs a longer
+    // `--days` must refuse up front.
+    let planned_ticks = u64::from(opts.days) * TICKS_PER_DAY;
+    let manifest_path = crate::manifest::Manifest::path_for(out, label, seed);
+    if manifest_path.is_file() {
+        let old = crate::manifest::Manifest::read(&manifest_path).unwrap_or_else(|e| {
+            panic!(
+                "{} exists but cannot be read ({e}); remove it or use a different --label or -o",
+                manifest_path.display()
+            )
+        });
+        let same_start = old.start == start
+            && old.start_tick == tick0
+            && old.config.digest() == sim.config.digest();
+        let prior_extinct = final_metrics_population(out, label, seed) == Some(0);
+        let ticks_ok = old.ticks == planned_ticks
+            || (opts.stop_on_extinction && old.ticks < planned_ticks && prior_extinct);
+        if !same_start || !ticks_ok {
+            panic!(
+                "{} already records a different run; use a different --label or -o",
+                manifest_path.display()
+            );
+        }
+    }
     let mut frames: Vec<(Canvas, Canvas)> = Vec::new();
-    if timelapse.contains(&0) {
+    let mut extinct = sim.population() == 0;
+    let mut snap_pngs: Vec<String> = Vec::new();
+    let mut state_snaps: Vec<String> = Vec::new();
+    let mut frames_written: Vec<String> = Vec::new();
+    if timelapse.contains(&sim.day()) {
         frames.push((
             frame(&sim, Overlay::Biome, 3),
             frame(&sim, Overlay::Depletion, 3),
         ));
     }
-    for d in 1..=days {
+    for _ in 0..opts.days {
         sim.run(TICKS_PER_DAY);
+        let d = sim.day();
         let m = sim.metrics.last().expect("daily metrics").clone();
-        if every > 0 && d % every == 0 {
+        if opts.every > 0 && d % opts.every == 0 {
             print_line(&m);
         }
         if timelapse.contains(&d) {
@@ -52,16 +182,28 @@ pub fn run(
                 frame(&sim, Overlay::Depletion, 3),
             ));
         }
-        if snap_every > 0 && d % snap_every == 0 {
-            snapshot(&sim, out, &format!("{label}_seed{seed}_day{d:03}"));
+        if opts.snap_every > 0 && d % opts.snap_every == 0 {
+            let name = format!("{label}_seed{seed}_day{d:03}");
+            snapshot(&sim, opts.out, &name);
+            snap_pngs.push(format!("{name}.png"));
         }
-        if sim.population() == 0 {
+        if opts.save_every > 0 && d % opts.save_every == 0 {
+            let name = format!("{label}_seed{seed}_day{d:03}.snap.json");
+            let path = out.join(&name);
+            sim.save_snapshot(&path)
+                .unwrap_or_else(|e| panic!("saving periodic snapshot: {e}"));
+            state_snaps.push(name);
+        }
+        if sim.population() == 0 && !extinct {
+            extinct = true;
             println!("  population extinct on day {d}");
-            break;
+            if opts.stop_on_extinction {
+                break;
+            }
         }
     }
     let secs = t1.elapsed().as_secs_f64();
-    let ticks = sim.tick;
+    let ticks = sim.tick - tick0;
     println!(
         "  ran {ticks} ticks in {secs:.2} s ({:.0} ticks/s), final hash {}",
         ticks as f64 / secs.max(1e-9),
@@ -111,6 +253,8 @@ pub fn run(
         let p2 = out.join(format!("{base}_timelapse_depletion.png"));
         Canvas::strip(&biome).save(&p1);
         Canvas::strip(&depl).save(&p2);
+        frames_written.push(format!("{base}_timelapse_biome.png"));
+        frames_written.push(format!("{base}_timelapse_depletion.png"));
         println!(
             "  timelapse days {:?}: {} and {}",
             timelapse,
@@ -118,6 +262,68 @@ pub fn run(
             p2.display()
         );
     }
+    if let Some(path) = opts.save {
+        sim.save_snapshot(path)
+            .unwrap_or_else(|e| panic!("saving snapshot: {e}"));
+        println!(
+            "  snapshot (day {}) written to {}",
+            sim.day(),
+            path.display()
+        );
+    }
+    // Paths relative to the manifest's directory (the output folder).
+    let mut outputs = vec![
+        format!("{base}_metrics.csv"),
+        format!("{base}_deaths.csv"),
+        format!("{base}_final.png"),
+    ];
+    outputs.extend(snap_pngs);
+    outputs.extend(state_snaps);
+    if !frames_written.is_empty() {
+        outputs.extend(frames_written);
+    }
+    if let Some(p) = opts.save {
+        outputs.push(
+            crate::manifest::relative_to(out, p)
+                .unwrap_or_else(|| p.to_path_buf())
+                .display()
+                .to_string(),
+        );
+    }
+    let manifest = crate::manifest::Manifest {
+        format: crate::manifest::MANIFEST_FORMAT,
+        build: crate::manifest::Build::current(),
+        command: crate::manifest::recorded_command(),
+        label: label.to_string(),
+        seed,
+        start,
+        start_tick: tick0,
+        start_state_hash,
+        ticks: sim.tick - tick0,
+        final_tick: sim.tick,
+        final_state_hash: hash::hex(sim.state_hash()),
+        config: sim.config.clone(),
+        outputs,
+    };
+    match manifest.write(out) {
+        Ok(p) => {
+            println!("  manifest written to {}", p.display());
+            crate::index::upsert_after_run(out, &p);
+        }
+        Err(e) => panic!("{e}"),
+    }
+    sim
+}
+
+/// Final `population` from `<label>_seed<S>_metrics.csv`, if present and parseable.
+fn final_metrics_population(out: &Path, label: &str, seed: u64) -> Option<u32> {
+    let text = std::fs::read_to_string(out.join(format!("{label}_seed{seed}_metrics.csv"))).ok()?;
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+    let header = lines.next()?;
+    let cols: Vec<&str> = header.split(',').collect();
+    let i_pop = cols.iter().position(|c| *c == "population")?;
+    let last = lines.next_back()?;
+    last.split(',').nth(i_pop)?.parse().ok()
 }
 
 fn print_line(m: &DailyMetrics) {
@@ -220,6 +426,11 @@ pub fn frame(sim: &Simulation, overlay: Overlay, scale: u32) -> Canvas {
     for d in &sim.weather.active {
         img.circle(d.center, d.radius as f32, [255, 140, 0]);
     }
+    for d in &sim.disruptions.active {
+        for &t in &d.tiles {
+            img.dot(sim.world.dims.pos(t), [230, 30, 30], scale);
+        }
+    }
     for s in sim.settlements.tracked.iter() {
         let c = match s.class {
             accrete_core::simulation::settlement::SizeClass::Candidate => [180, 180, 255],
@@ -255,29 +466,102 @@ pub fn snapshot(sim: &Simulation, out: &Path, name: &str) {
     frame(sim, Overlay::Biome, 5).save(&path);
 }
 
-/// Apply a `section.key=value` override by round-tripping the config through TOML.
+/// Apply a `section.key=value` override by round-tripping the config through
+/// TOML. On a bad override (for `--set`) it prints the reason and exits
+/// with status 2, like every other command-line error.
 pub fn apply_override(config: &Config, kv: &str) -> Config {
-    let (path, value) = kv
-        .split_once('=')
-        .unwrap_or_else(|| panic!("--set expects key=value, got {kv}"));
+    try_apply_override(config, kv).unwrap_or_else(|e| {
+        eprintln!("error: {e}");
+        std::process::exit(2)
+    })
+}
+
+/// The kind of value a config key holds, for parsing and sweeping.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyKind {
+    Float,
+    Integer,
+    Boolean,
+    Other,
+}
+
+/// What kind of value `section.key` holds in `config`.
+pub fn key_kind(config: &Config, path: &str) -> Result<KeyKind, String> {
     let (section, key) = path
         .split_once('.')
-        .unwrap_or_else(|| panic!("--set key must be section.key, got {path}"));
+        .ok_or_else(|| format!("config key must be section.key, got {path}"))?;
+    let doc: toml::Table = toml::from_str(&config.to_toml_string()).expect("config toml");
+    let old = doc
+        .get(section)
+        .and_then(|t| t.as_table())
+        .ok_or_else(|| format!("unknown config section {section}"))?
+        .get(key)
+        .ok_or_else(|| format!("unknown key {section}.{key}"))?;
+    Ok(match old {
+        toml::Value::Float(_) => KeyKind::Float,
+        toml::Value::Integer(_) => KeyKind::Integer,
+        toml::Value::Boolean(_) => KeyKind::Boolean,
+        _ => KeyKind::Other,
+    })
+}
+
+/// Like `apply_override`, but returns an error instead of panicking.
+pub fn try_apply_override(config: &Config, kv: &str) -> Result<Config, String> {
+    let (path, value) = kv
+        .split_once('=')
+        .ok_or_else(|| format!("override expects key=value, got {kv}"))?;
+    let (section, key) = path
+        .split_once('.')
+        .ok_or_else(|| format!("config key must be section.key, got {path}"))?;
+    let value = value.trim();
     let mut doc: toml::Table = toml::from_str(&config.to_toml_string()).expect("config toml");
     let table = doc
         .get_mut(section)
         .and_then(|t| t.as_table_mut())
-        .unwrap_or_else(|| panic!("unknown config section {section}"));
+        .ok_or_else(|| format!("unknown config section {section}"))?;
     let old = table
         .get(key)
-        .unwrap_or_else(|| panic!("unknown key {section}.{key}"));
+        .ok_or_else(|| format!("unknown key {section}.{key}"))?;
+    let bad = |what: &str| format!("{section}.{key} expects {what}, got {value:?}");
     let new = match old {
-        toml::Value::Float(_) => toml::Value::Float(value.parse().expect("float value")),
-        toml::Value::Integer(_) => toml::Value::Integer(value.parse().expect("integer value")),
-        toml::Value::Boolean(_) => toml::Value::Boolean(value.parse().expect("bool value")),
+        toml::Value::Float(_) => toml::Value::Float(value.parse().map_err(|_| bad("a number"))?),
+        toml::Value::Integer(_) => {
+            toml::Value::Integer(value.parse().map_err(|_| bad("an integer"))?)
+        }
+        toml::Value::Boolean(_) => {
+            toml::Value::Boolean(value.parse().map_err(|_| bad("true or false"))?)
+        }
         _ => toml::Value::String(value.to_string()),
     };
     table.insert(key.to_string(), new);
     Config::from_toml_str(&toml::to_string(&doc).expect("toml"))
-        .unwrap_or_else(|e| panic!("override {kv}: {e}"))
+        .map_err(|e| format!("override {kv}: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn labels_must_be_plain_names() {
+        for ok in ["run", "drought-60", "a_b.2"] {
+            assert!(check_label(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "a/b", "a\\b", "c:x", "a,b", ".", "..", "tab\there"] {
+            assert!(check_label(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn unwritable_save_paths_fail_up_front() {
+        let dir = std::env::temp_dir().join(format!("accrete-w-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("plain-file");
+        std::fs::write(&file, b"").unwrap();
+        assert!(check_writable(&file.join("x.snap.json")).is_err());
+        let p = dir.join("sub/ok.snap.json");
+        assert!(check_writable(&p).is_ok());
+        assert!(!p.exists(), "the probe leaves no file behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

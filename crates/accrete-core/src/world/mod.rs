@@ -68,6 +68,38 @@ pub enum PathLevel {
     Road,
 }
 
+/// A temporary route failure on a tile (accrete.md, Week 4 Day 2): a flood,
+/// landslide or washed-out ford. Set and cleared by scripted interventions
+/// (`simulation::disruption`); agents learn of it only by seeing it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Disruption {
+    #[default]
+    None,
+    /// Entering costs `factor` times the normal movement points.
+    Slowed { factor: u8 },
+    /// Impassable.
+    Blocked,
+}
+
+impl Disruption {
+    pub fn code(self) -> u8 {
+        match self {
+            Disruption::None => 0,
+            Disruption::Slowed { factor } => factor.max(1),
+            Disruption::Blocked => 255,
+        }
+    }
+
+    /// The more severe of two disruptions.
+    pub fn worst(self, other: Disruption) -> Disruption {
+        if other.code() > self.code() {
+            other
+        } else {
+            self
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Tile {
     /// Normalized elevation in `[0, 1]`; land is at or above `World::sea_level`.
@@ -208,6 +240,11 @@ pub struct World {
     /// Derived index: home ids per tile (rebuilt on demand).
     #[serde(skip)]
     pub homes_at: Vec<Vec<HomeId>>,
+    /// Derived index: active route disruption per tile, or empty when there
+    /// is none. The authoritative state is `Simulation::disruptions`, which
+    /// rebuilds this index whenever it changes.
+    #[serde(skip)]
+    pub disruption_at: Vec<Disruption>,
 }
 
 pub const NO_TILE: u32 = u32::MAX;
@@ -248,6 +285,38 @@ impl World {
             return &[];
         }
         &self.homes_at[self.dims.idx(p) as usize]
+    }
+
+    /// The route disruption on `p` (none on most tiles).
+    #[inline]
+    pub fn disruption(&self, p: Pos) -> Disruption {
+        if self.disruption_at.is_empty() {
+            Disruption::None
+        } else {
+            self.disruption_at[self.dims.idx(p) as usize]
+        }
+    }
+
+    /// MP to enter `p` by an orthogonal step, including any disruption, or
+    /// `None` if impassable.
+    #[inline]
+    pub fn enter_cost(&self, p: Pos, c: &crate::config::MovementConfig) -> Option<u32> {
+        movement::with_disruption(movement::enter_cost(self.tile(p), c), self.disruption(p))
+    }
+
+    /// Orthogonal MP to step from `from` into its neighbour `to`; unlike
+    /// `enter_cost`, this lets an agent standing in a blocked area wade out.
+    pub fn step_in_cost(
+        &self,
+        from: Pos,
+        to: Pos,
+        c: &crate::config::MovementConfig,
+    ) -> Option<u32> {
+        movement::entry_cost(
+            movement::enter_cost(self.tile(to), c),
+            self.disruption(from),
+            self.disruption(to),
+        )
     }
 
     pub fn pile_at(&self, p: Pos) -> Option<&Pile> {
@@ -385,6 +454,7 @@ pub fn generate_world(seed: u64, config: &Config) -> World {
         piles: Vec::new(),
         vis: Visibility::default(),
         homes_at: Vec::new(),
+        disruption_at: Vec::new(),
     };
     resources::place(&mut world, &config.resources, &mut rng);
     world.rebuild_derived(config);

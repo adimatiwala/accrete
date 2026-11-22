@@ -16,10 +16,12 @@ This file is a map of where things are.
 | `agents/memory.rs` | Fixed-size memory: known tiles, resources (40/16/8), homes, changed tiles, social (reciprocity), frequent tiles. |
 | `agents/pathfinding.rs` | A* over known tiles with believed costs, plus a straight-line travel estimate. |
 | `agents/decision.rs` | Utility scoring of every option, with recorded terms; site scoring; reproduction motives; road and shelter value; material plans. |
-| `simulation/engine.rs` | The tick pipeline: observe, plan homes, propose, resolve, apply, deaths, meetings, births, daily. |
+| `simulation/engine.rs` | The tick pipeline: observe, plan homes, propose, resolve, apply, deaths, meetings, births, daily. Also the observers for the random and omniscient baselines (`sim.agent_kind`). |
 | `simulation/social.rs` | Knowledge sharing and barter with reciprocity. |
 | `simulation/infrastructure.rs` | Road and shelter construction, and road upkeep. |
 | `simulation/weather.rs` | Random and scripted droughts, and optional seasons. |
+| `simulation/disruption.rs` | Scripted route disruptions (blocked or slowed tiles), started and ended in the daily phase; the authoritative state behind `World::disruption_at`. |
+| `simulation/snapshot.rs` | Save and load the full state as versioned JSON, with a state-hash check on load; `set_config` for intervention branches. |
 | `simulation/settlement.rs`, `emergence.rs`, `metrics.rs`, `events.rs` | Measurement only (agents never read these): settlements, clustering, depletion, specialisation, the daily metrics row, the event log, the resource ledger. |
 | `scenario.rs` | Loader for the hand-built TOML worlds in `tests/scenarios/`. |
 

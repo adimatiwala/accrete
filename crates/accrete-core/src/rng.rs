@@ -27,6 +27,9 @@ pub enum Stream {
     Conflicts = 6,
     Baseline = 7,
     Founders = 8,
+    /// Experiment designs (e.g. Latin-hypercube parameter sweeps). Never
+    /// drawn by a simulation, so it cannot change any run's results.
+    Design = 9,
 }
 
 /// A seeded RNG stream with portable float helpers.

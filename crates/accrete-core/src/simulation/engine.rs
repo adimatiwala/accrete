@@ -29,12 +29,13 @@ use crate::agents::agent::{
 };
 use crate::agents::decision::{self, Candidate, Ctx, Trace, reproduce_blockers};
 use crate::agents::memory::{AgentMemory, HomeSighting};
-use crate::agents::pathfinding::{AgentBelief, PathScratch};
-use crate::config::{Config, TICKS_PER_DAY, TickRates};
+use crate::agents::pathfinding::{AgentBelief, Omniscient, PathScratch};
+use crate::config::{AgentKind, Config, TICKS_PER_DAY, TickRates};
 use crate::geom::{Pos, is_diagonal};
 use crate::hash::{StableHash, StableHasher};
 use crate::inventory::{Inventory, Resource};
 use crate::rng::{Rng, Stream};
+use crate::simulation::disruption::DisruptionState;
 use crate::simulation::emergence;
 use crate::simulation::events::{
     DeathCause, DeathRecord, EventKind, EventLog, Ledger, PathologyKind,
@@ -42,7 +43,7 @@ use crate::simulation::events::{
 use crate::simulation::metrics::{DailyMetrics, DayCounters};
 use crate::simulation::settlement::{SettlementTracker, SizeClass};
 use crate::simulation::weather::WeatherState;
-use crate::world::movement::{enter_cost, step_cost};
+use crate::world::movement::step_cost;
 use crate::world::{Home, HomeId, Pile, World, generate_world, resources};
 
 /// What an agent does this tick.
@@ -91,10 +92,13 @@ pub struct Simulation {
     /// (debugging; use `intent_of`).
     pub intents: Vec<(u32, Intent)>,
     pub weather: WeatherState,
+    /// Route disruptions in progress and past (authoritative; the world keeps
+    /// a derived per-tile index).
+    pub disruptions: DisruptionState,
     pub(crate) scratch: PathScratch,
-    total_births: u32,
-    total_deaths: [u32; 2],
-    lifespans: (f64, u32),
+    pub(crate) total_births: u32,
+    pub(crate) total_deaths: [u32; 2],
+    pub(crate) lifespans: (f64, u32),
 }
 
 const GRAVEYARD_CAP: usize = 500;
@@ -109,12 +113,31 @@ impl Simulation {
     /// Start a simulation on an existing world (e.g. a hand-built scenario),
     /// placing one initial agent on each of `world.spawns`.
     pub fn from_world(world: World, config: Config) -> Self {
+        let seed = world.seed;
+        let mut sim = Self::from_world_parts(world, config, Vec::new());
+        let mut founders = Rng::for_stream(seed, Stream::Founders);
+        let spawns = sim.world.spawns.clone();
+        for p in spawns {
+            let a = sim.make_founder(p, &mut founders);
+            sim.agents.push(a);
+        }
+        sim.reset_ledger();
+        for i in 0..sim.agents.len() {
+            observe(&mut sim.agents[i], &sim.world, &sim.config, &sim.rates, 0);
+        }
+        sim
+    }
+
+    /// A simulation at tick 0 with the given world and agents, fresh RNG
+    /// streams for the world's seed, and empty bookkeeping. Callers fill in
+    /// the rest (`from_world` adds founders; snapshots restore everything).
+    pub(crate) fn from_world_parts(world: World, config: Config, agents: Vec<Agent>) -> Self {
         let rates = TickRates::new(&config);
         let seed = world.seed;
-        let mut sim = Self {
+        Self {
             rates,
             tick: 0,
-            agents: Vec::new(),
+            agents,
             next_id: 0,
             rng_agents: Rng::for_stream(seed, Stream::Agents),
             rng_births: Rng::for_stream(seed, Stream::Births),
@@ -134,23 +157,13 @@ impl Simulation {
             intents: Vec::new(),
             scratch: PathScratch::default(),
             weather: WeatherState::default(),
+            disruptions: DisruptionState::default(),
             total_births: 0,
             total_deaths: [0; 2],
             lifespans: (0.0, 0),
             world,
             config,
-        };
-        let mut founders = Rng::for_stream(seed, Stream::Founders);
-        let spawns = sim.world.spawns.clone();
-        for p in spawns {
-            let a = sim.make_founder(p, &mut founders);
-            sim.agents.push(a);
         }
-        sim.reset_ledger();
-        for i in 0..sim.agents.len() {
-            observe(&mut sim.agents[i], &sim.world, &sim.config, &sim.rates, 0);
-        }
-        sim
     }
 
     /// Start resource accounting afresh from the current state.
@@ -434,7 +447,7 @@ impl Simulation {
         let cands = {
             let cx = self.ctx(tick);
             let a = &self.agents[i];
-            if self.config.sim.agent_kind == crate::config::AgentKind::Random {
+            if self.config.sim.agent_kind == AgentKind::Random {
                 random_choice(decision::evaluate(a, &cx), &mut self.rng_agents)
             } else {
                 decision::evaluate(a, &cx)
@@ -558,20 +571,31 @@ impl Simulation {
             let next_ok = r
                 .remaining()
                 .first()
-                .is_some_and(|&p| enter_cost(self.world.tile(p), mc).is_some());
+                .is_some_and(|&p| self.world.step_in_cost(agent.pos, p, mc).is_some());
             // A stale but valid route is re-planned: the agent may know a better way now.
             if r.target == target && !r.done() && next_ok && fresh {
                 return true;
             }
         }
-        let res = self.scratch.find_path(
-            &self.world,
-            &AgentBelief(&agent.memory),
-            agent.pos,
-            target,
-            mc,
-            mc.astar_max_expansions,
-        );
+        let res = if self.config.sim.agent_kind == AgentKind::Omniscient {
+            self.scratch.find_path(
+                &self.world,
+                &Omniscient,
+                agent.pos,
+                target,
+                mc,
+                mc.astar_max_expansions,
+            )
+        } else {
+            self.scratch.find_path(
+                &self.world,
+                &AgentBelief(&agent.memory),
+                agent.pos,
+                target,
+                mc,
+                mc.astar_max_expansions,
+            )
+        };
         self.today.astar_searches += 1;
         let agent = &mut self.agents[i];
         match res {
@@ -1188,8 +1212,24 @@ impl Simulation {
                 let mut moved_any = false;
                 if let Some(route) = a.route.as_mut() {
                     while let Some(&next) = route.remaining().first() {
-                        let Some(cost) = enter_cost(world.tile(next), &c.movement) else {
-                            // Blocked: drop the route; it will be re-planned.
+                        let Some(cost) = world.step_in_cost(a.pos, next, &c.movement) else {
+                            // Blocked (e.g. a route disruption the agent had
+                            // not seen): it now knows, and re-plans.
+                            let path = world.tile(next).path_level;
+                            let d = world.disruption(next);
+                            a.memory.note_changed(
+                                next,
+                                path,
+                                tick,
+                                c.memory.changed_slots as usize,
+                            );
+                            a.memory.note_disruption(
+                                next,
+                                d,
+                                tick,
+                                a.pos,
+                                c.memory.disruption_slots as usize,
+                            );
                             a.route = None;
                             break;
                         };
@@ -1220,8 +1260,10 @@ impl Simulation {
                 if moved_any {
                     a.moved = true;
                     a.pathology.last_progress_tick = tick;
-                } else if a.movement_points > 0 {
-                    // Accumulating MP for a costly tile counts as progress.
+                } else if a.route.is_some() && a.movement_points > 0 {
+                    // Still on a route, waiting for enough MP for the next
+                    // tile. A blocked step clears the route above, so it does
+                    // not count as progress (or the stuck detector never fires).
                     a.pathology.last_progress_tick = tick;
                 }
             }
@@ -1501,14 +1543,26 @@ impl Simulation {
             if p == a.pos {
                 return true;
             }
-            if let Ok(path) = self.scratch.find_path(
-                &self.world,
-                &AgentBelief(&a.memory),
-                a.pos,
-                p,
-                mc,
-                mc.astar_max_expansions,
-            ) {
+            let found = if self.config.sim.agent_kind == AgentKind::Omniscient {
+                self.scratch.find_path(
+                    &self.world,
+                    &Omniscient,
+                    a.pos,
+                    p,
+                    mc,
+                    mc.astar_max_expansions,
+                )
+            } else {
+                self.scratch.find_path(
+                    &self.world,
+                    &AgentBelief(&a.memory),
+                    a.pos,
+                    p,
+                    mc,
+                    mc.astar_max_expansions,
+                )
+            };
+            if let Ok(path) = found {
                 if path.cost <= budget {
                     return true;
                 }
@@ -1545,6 +1599,40 @@ impl Simulation {
         for d in ended {
             self.events
                 .push(tick, None, d.center, EventKind::DroughtEnded);
+        }
+        // Route disruptions start and end through ordinary movement costs.
+        let (started, ended) =
+            self.disruptions
+                .update(day, &mut self.world, &c.disruption.scripted);
+        for d in started {
+            let pos = d
+                .tiles
+                .first()
+                .map_or(Pos::default(), |&t| self.world.dims.pos(t));
+            self.events.push(
+                tick,
+                None,
+                pos,
+                EventKind::RouteDisrupted {
+                    tiles: d.tiles.len() as u32,
+                    days: d.end_day - d.start_day,
+                    effect: d.effect,
+                },
+            );
+        }
+        for d in ended {
+            let pos = d
+                .tiles
+                .first()
+                .map_or(Pos::default(), |&t| self.world.dims.pos(t));
+            self.events.push(
+                tick,
+                None,
+                pos,
+                EventKind::RouteRestored {
+                    tiles: d.tiles.len() as u32,
+                },
+            );
         }
         let factors = self.weather.regrowth_factors(&self.world, day, &c.weather);
         let (food, wood) = resources::regrow(&mut self.world, &c.resources, |i| factors[i]);
@@ -1789,6 +1877,7 @@ impl Simulation {
             .filter(|&p| self.world.tile(p).is_land() && self.weather.in_drought(p))
             .count();
         m.drought_area = in_drought as f32 / land as f32;
+        m.disrupted_tiles = DisruptionState::disrupted_tiles(&self.world);
         m.trail_tiles = self
             .world
             .tiles
@@ -1839,6 +1928,7 @@ impl Simulation {
         self.rng_conflicts.stable_hash(&mut h);
         self.rng_weather.stable_hash(&mut h);
         self.weather.stable_hash(&mut h);
+        self.disruptions.stable_hash(&mut h);
         h.finish()
     }
 
@@ -1914,10 +2004,15 @@ impl Simulation {
 
 /// Observe the sight square and update memory.
 pub fn observe(a: &mut Agent, world: &World, c: &Config, r: &TickRates, tick: u64) {
+    if c.sim.agent_kind == AgentKind::Omniscient {
+        observe_omniscient(a, world, c, tick);
+        return;
+    }
     let half_life = r.freshness_half_life_ticks;
     let mem_cfg = &c.memory;
     let home_slots = mem_cfg.home_slots as usize;
     let changed_slots = mem_cfg.changed_slots as usize;
+    let disruption_slots = mem_cfg.disruption_slots as usize;
     let mut seen: Vec<Pos> = Vec::with_capacity(169);
     world.vis.for_each_visible(world, a.pos, |p| seen.push(p));
     let mut amounts: Vec<(Pos, [f32; 3])> = Vec::with_capacity(seen.len());
@@ -1953,6 +2048,8 @@ pub fn observe(a: &mut Agent, world: &World, c: &Config, r: &TickRates, tick: u6
             );
         }
         a.memory.note_changed(p, t.path_level, tick, changed_slots);
+        a.memory
+            .note_disruption(p, world.disruption(p), tick, a.pos, disruption_slots);
     }
     if !mem_cfg.enabled {
         a.memory.forget_resources_not_in(|p| seen.contains(&p));
@@ -1984,6 +2081,144 @@ fn home_sighting(world: &World, hid: HomeId, base_capacity: u32) -> HomeSighting
     }
 }
 
+/// Omniscient baseline (evaluation only): perfect knowledge within the same
+/// memory limits as normal agents. The agent knows the terrain of the whole
+/// map, and for each resource it remembers the *nearest* tiles that hold it
+/// (true amounts, seen now), up to its pool size; likewise the nearest homes.
+/// Choosing, scoring and routing use the true world (`decision::omniscient`).
+/// Its decision logic is the same as a normal agent's, so the gap between the
+/// two measures what limited sight and memory cost. `memory.enabled = false`
+/// does not apply to it: it always knows.
+///
+/// Tiles are visited ring by ring (Chebyshev distance), each ring's perimeter
+/// in a fixed order, and the scan stops once every pool is full or the world
+/// has nothing more to offer, so it never walks the whole map needlessly.
+/// A resource the agent recently failed to reach (its memory still has the
+/// `unreachable_until` cooldown) is skipped so it cannot crowd out reachable
+/// ones; it is offered again after the cooldown.
+fn observe_omniscient(a: &mut Agent, world: &World, c: &Config, tick: u64) {
+    let mem = &c.memory;
+    let n = world.dims.len();
+    if (a.memory.known_count() as usize) < n {
+        for i in 0..n as u32 {
+            a.memory.learn(world.dims.pos(i));
+        }
+    }
+    let amount_at = |p: Pos, res: Resource| {
+        let t = world.tile(p);
+        let base = match res {
+            Resource::Food => t.food,
+            Resource::Wood => t.wood,
+            Resource::Stone => t.stone,
+        };
+        base + world.pile_at(p).map_or(0.0, |pl| pl.goods.get(res))
+    };
+    // Use failed_targets, not the resource pool: set_resources replaces the
+    // pool, so a cooldown stored only on a resource entry would be wiped on
+    // the next re-observe (every `reobserve_ticks`) instead of lasting the
+    // full unreachable window. mark_unreachable always records failed_targets.
+    let cooling = |p: Pos, _res: Resource| a.memory.is_failed_target(p, tick);
+    // Blocked tiles are not offered as goals (except the tile the agent is
+    // already on, so it can still plan a way out). True route costs only
+    // hold if the pools never point at impassable targets.
+    let usable = |p: Pos| p == a.pos || world.disruption(p) != crate::world::Disruption::Blocked;
+    // How many entries each pool can actually get: its size, or fewer if the
+    // world holds fewer eligible tiles.
+    let mut available = [0usize; 3];
+    for i in 0..n as u32 {
+        let p = world.dims.pos(i);
+        if !usable(p) {
+            continue;
+        }
+        for res in Resource::ALL {
+            if amount_at(p, res) >= mem.min_amount {
+                available[res.index()] += 1;
+            }
+        }
+    }
+    let caps = [
+        AgentMemory::slots(Resource::Food, mem).min(available[0]),
+        AgentMemory::slots(Resource::Wood, mem).min(available[1]),
+        AgentMemory::slots(Resource::Stone, mem).min(available[2]),
+    ];
+    let home_cap = (mem.home_slots as usize).min(world.homes.len());
+    let mut found: [Vec<crate::agents::memory::ResourceMemory>; 3] = Default::default();
+    let mut homes: Vec<(HomeId, Pos)> = Vec::new();
+    type Found = [Vec<crate::agents::memory::ResourceMemory>; 3];
+    let visit = |p: Pos, found: &mut Found, homes: &mut Vec<(HomeId, Pos)>| {
+        if !world.contains(p) || !usable(p) {
+            return;
+        }
+        for res in Resource::ALL {
+            let k = res.index();
+            if found[k].len() >= caps[k] {
+                continue;
+            }
+            let amount = amount_at(p, res);
+            if amount >= mem.min_amount && !cooling(p, res) {
+                found[k].push(crate::agents::memory::ResourceMemory {
+                    pos: p,
+                    resource: res,
+                    amount,
+                    seen_tick: tick,
+                    unreachable_until: 0,
+                });
+            }
+        }
+        for &hid in world.homes_on(p) {
+            if homes.len() < home_cap {
+                homes.push((hid, p));
+            }
+        }
+    };
+    let max_r = world.dims.width.max(world.dims.height) as i32;
+    for r in 0..=max_r {
+        let full = (0..3).all(|k| found[k].len() >= caps[k]) && homes.len() >= home_cap;
+        if full {
+            break;
+        }
+        if r == 0 {
+            visit(a.pos, &mut found, &mut homes);
+            continue;
+        }
+        // Perimeter of the ring at distance r: top and bottom rows, then the
+        // left and right columns without their corners.
+        for dx in -r..=r {
+            visit(a.pos.offset(dx, -r), &mut found, &mut homes);
+            visit(a.pos.offset(dx, r), &mut found, &mut homes);
+        }
+        for dy in (-r + 1)..r {
+            visit(a.pos.offset(-r, dy), &mut found, &mut homes);
+            visit(a.pos.offset(r, dy), &mut found, &mut homes);
+        }
+    }
+    let [food, wood, stone] = found;
+    let mut all = food;
+    all.extend(wood);
+    all.extend(stone);
+    a.memory.set_resources(all);
+    for (hid, p) in homes {
+        a.memory.note_home(
+            hid,
+            p,
+            home_sighting(world, hid, c.homes.comfortable_capacity),
+            tick,
+            mem.home_slots as usize,
+        );
+    }
+    if let Some(hid) = a.home {
+        let h = &world.homes[hid as usize];
+        a.memory.home_food_seen = h.stored().food;
+        a.memory.home_room_seen = h
+            .chests
+            .iter()
+            .map(|ch| (c.inventory.chest_capacity - ch.weight(&c.inventory)).max(0.0))
+            .sum();
+    }
+    a.last_observe_tick = tick;
+    a.moved = false;
+}
+
 fn log_pathology(
     log: &mut Vec<(u64, u32, PathologyKind)>,
     tick: u64,
@@ -2001,11 +2236,15 @@ fn insert_sorted(v: &mut Vec<u32>, id: u32) {
     }
 }
 
-/// Random baseline: a uniformly random valid option (Idle stays last resort).
+/// Random baseline: the options in a uniformly random order, with Idle moved
+/// last, so the agent takes the first other option whose target it can reach
+/// and only idles when none is reachable.
 fn random_choice(mut cands: Vec<Candidate>, rng: &mut Rng) -> Vec<Candidate> {
     if cands.len() > 1 {
         rng.shuffle(&mut cands);
     }
+    // Stable: keeps the shuffled order of everything else.
+    cands.sort_by_key(|c| c.kind == GoalKind::Idle);
     cands
 }
 
@@ -2120,5 +2359,175 @@ traits = [0.5, 0.5, 0.0, 0.5]
         assert!(sim.agents[i].home_plan.is_none(), "plan dropped to re-plan");
         assert_eq!(sim.agents[i].goal.kind, GoalKind::Idle);
         sim.check_invariants().expect("state stays consistent");
+    }
+
+    // ---- Baselines (review fixes) -------------------------------------
+
+    fn omniscient_config() -> Config {
+        let mut c = Config::default();
+        c.sim.agent_kind = AgentKind::Omniscient;
+        c
+    }
+
+    /// A tile holding several homes must not overflow the home pool and evict
+    /// the home the agent is standing on.
+    #[test]
+    fn omniscient_home_pool_keeps_the_nearest_homes() {
+        let toml = r#"
+name = "homes-on-shared-tiles"
+map = """
+......
+......
+"""
+[[home]]
+at = [1, 0]
+[[home]]
+at = [2, 0]
+[[home]]
+at = [2, 0]
+[[home]]
+at = [2, 0]
+[[agent]]
+at = [1, 0]
+home = 0
+"#;
+        let mut c = omniscient_config();
+        c.memory.home_slots = 2;
+        let sc = crate::scenario::Scenario::from_toml_str(toml).expect("parses");
+        let sim = sc.build(&c).expect("builds");
+        let homes: Vec<HomeId> = sim.agents[0].memory.homes.iter().map(|h| h.home).collect();
+        assert_eq!(homes.len(), 2, "pool size respected: {homes:?}");
+        assert!(homes.contains(&0), "kept the home it stands on: {homes:?}");
+    }
+
+    #[test]
+    fn omniscient_observation_is_deterministic_and_respects_pools() {
+        let mut sim = Simulation::new(1, omniscient_config());
+        sim.run(5 * 24);
+        let c = sim.config.clone();
+        for i in [0, sim.agents.len() / 2] {
+            let mut a = sim.agents[i].clone();
+            let mut b = sim.agents[i].clone();
+            observe_omniscient(&mut a, &sim.world, &c, sim.tick);
+            observe_omniscient(&mut b, &sim.world, &c, sim.tick);
+            assert_eq!(a.memory, b.memory, "same state, same memory");
+            for res in Resource::ALL {
+                assert!(a.memory.resource_count(res) <= AgentMemory::slots(res, &c.memory));
+            }
+            assert!(a.memory.homes.len() <= c.memory.home_slots as usize);
+            assert_eq!(a.memory.known_count() as usize, sim.world.dims.len());
+        }
+    }
+
+    /// A resource on cooldown after a failed route is skipped, so the pool
+    /// fills with other places instead of retrying the unreachable one.
+    #[test]
+    fn omniscient_skips_resources_on_unreachable_cooldown() {
+        let mut c = omniscient_config();
+        c.memory.food_slots = 1;
+        let mut sim = Simulation::new(1, c.clone());
+        sim.run(24);
+        let tick = sim.tick;
+        let mut a = sim.agents[0].clone();
+        observe_omniscient(&mut a, &sim.world, &c, tick);
+        let nearest = a
+            .memory
+            .resources
+            .iter()
+            .find(|m| m.resource == Resource::Food)
+            .unwrap()
+            .pos;
+        a.memory.mark_unreachable(nearest, tick + 100);
+        observe_omniscient(&mut a, &sim.world, &c, tick);
+        let food: Vec<_> = a
+            .memory
+            .resources
+            .iter()
+            .filter(|m| m.resource == Resource::Food)
+            .collect();
+        assert_eq!(food.len(), 1, "the pool is refilled");
+        assert_ne!(food[0].pos, nearest, "the unreachable place was skipped");
+        // A later re-observe inside the window must still skip it (the cooldown
+        // lives in failed_targets, not in the replaced resource pool).
+        observe_omniscient(&mut a, &sim.world, &c, tick + 6);
+        let food: Vec<_> = a
+            .memory
+            .resources
+            .iter()
+            .filter(|m| m.resource == Resource::Food)
+            .collect();
+        assert_ne!(
+            food[0].pos, nearest,
+            "cooldown must survive a re-observe inside the window"
+        );
+        // After the cooldown it is offered again.
+        observe_omniscient(&mut a, &sim.world, &c, tick + 200);
+        let food: Vec<_> = a
+            .memory
+            .resources
+            .iter()
+            .filter(|m| m.resource == Resource::Food)
+            .collect();
+        assert_eq!(food[0].pos, nearest);
+    }
+
+    /// Omniscient agents score travel with true path levels, so a road makes
+    /// a trip look cheaper to them than to a normal agent who has not seen it.
+    #[test]
+    fn omniscient_travel_estimates_use_true_roads() {
+        let mut sim = Simulation::new(1, Config::default());
+        let a = sim.agents[0].clone();
+        let from = a.pos;
+        let to = Pos::new(from.x + 6, from.y);
+        for dx in 1..=6 {
+            let p = Pos::new(from.x + dx, from.y);
+            if sim.world.contains(p) && sim.world.tile(p).is_land() {
+                sim.world.tile_mut(p).path_level = crate::world::PathLevel::Road;
+            }
+        }
+        let normal = decision::travel_ticks(&a, &sim.ctx(0), from, to);
+        sim.config.sim.agent_kind = AgentKind::Omniscient;
+        let omni = decision::travel_ticks(&a, &sim.ctx(0), from, to);
+        assert!(
+            omni < normal,
+            "omniscient {omni} should see the road (normal {normal})"
+        );
+        assert_eq!(
+            decision::believed_path(&a, &sim.ctx(0), Pos::new(from.x + 1, from.y)),
+            sim.world.tile(Pos::new(from.x + 1, from.y)).path_level
+        );
+    }
+
+    #[test]
+    fn omniscient_runs_stay_on_land_and_snapshots_round_trip() {
+        let mut c = omniscient_config();
+        c.sim.check_invariants = true; // includes "agent in the water"
+        let mut sim = Simulation::new(1, c);
+        sim.run(10 * 24);
+        let mut resumed = Simulation::from_snapshot_json(&sim.snapshot_json()).expect("loads");
+        sim.run(48);
+        resumed.run(48);
+        assert_eq!(resumed.state_hash(), sim.state_hash());
+    }
+
+    #[test]
+    fn random_baseline_is_deterministic_and_idles_only_last() {
+        let mut c = Config::default();
+        c.sim.agent_kind = AgentKind::Random;
+        let mut a = Simulation::new(2, c.clone());
+        let mut b = Simulation::new(2, c);
+        a.run(5 * 24);
+        b.run(5 * 24);
+        assert_eq!(a.state_hash(), b.state_hash());
+
+        let cx = a.ctx(a.tick);
+        let cands = decision::evaluate(&a.agents[0], &cx);
+        assert!(cands.iter().any(|c| c.kind == GoalKind::Idle));
+        let mut rng = Rng::for_stream(9, Stream::Agents);
+        for _ in 0..20 {
+            let order = random_choice(cands.clone(), &mut rng);
+            assert_eq!(order.last().unwrap().kind, GoalKind::Idle, "Idle is last");
+            assert_eq!(order.len(), cands.len());
+        }
     }
 }

@@ -13,7 +13,7 @@ macOS and Windows, with golden hashes in `tests/golden/`).
 crates/
   accrete-core/    pure simulation: world gen, agents, engine, social, weather, metrics
   accrete-viz/     overlay colours shared by the viewer and the CLI renderer
-  accrete-cli/     headless runner: run, render, trace, diag, world, config
+  accrete-cli/     headless runner: run, branch, experiments, sweep, index, reproduce, render, trace, diag, world, config
   accrete-viewer/  macroquad viewer: pan/zoom, overlays, inspector, playback
 configs/default.toml   every tunable, mirroring Config::default()
 tests/scenarios/       hand-built worlds for behavioural tests (Week 2 + Week 3)
@@ -33,9 +33,26 @@ cargo run --release -p accrete-viewer -- --seed 1 --play
 # strip (terrain + depletion) in results/
 cargo run --release -p accrete-cli -- run --seed 1 --days 300 --every 50 --timelapse 0,75,150,225,300
 
-# Experiments: override any config value
+# Snapshots and branching: save day 100, then compare a control and a drought to day 300
+cargo run --release -p accrete-cli -- run --seed 1 --days 100 --save results/seed1_day100.snap.json
+cargo run --release -p accrete-cli -- branch --load results/seed1_day100.snap.json --days 200 --drought 100:120:64:64:24:0.6 --label-b drought
+
+# Experiments: override any config value, or run the Week 3 Day 5 ablation suite
 cargo run --release -p accrete-cli -- run --seed 1 --set resources.food_regrowth=0.06 --label scarce
 cargo run --release -p accrete-cli -- run --seed 1 --set infrastructure.household_weight=0 --set social.reciprocity_enabled=false --label selfish
+cargo run --release -p accrete-cli -- experiments --seed 1 --days 100 -o results/emergence
+cargo run --release -p accrete-cli -- experiments --seed 1,2,3 --days 300 --only scarcity40,scarcity20 -o results/scarcity
+
+# Phase 2: ten seeds in parallel, with 95% intervals in emergence_aggregate.csv
+cargo run --release -p accrete-cli -- experiments --seed 1-10 --jobs 8 --days 300 -o results/phase2
+# Parameter sweep: a grid over food regrowth, 3 seeds per point, in parallel
+cargo run --release -p accrete-cli -- sweep --param resources.food_regrowth=0.03,0.06,0.1,0.15 --seed 1-3 --days 150 --jobs 8
+# Every run writes a manifest, upserts runs.sqlite, and refreshes runs_index.csv
+cargo run --release -p accrete-cli -- reproduce results/phase2/control_seed1_manifest.json
+cargo run --release -p accrete-cli -- index query -d results/phase2 --label control
+cargo run --release -p accrete-cli -- index rebuild -d results/phase2   # recursive; also refreshes the CSV
+# Mid-run state snapshots every 50 days (PNG maps still use --snap-every)
+cargo run --release -p accrete-cli -- run --seed 1 --days 100 --save-every 50 -o results
 
 # Why did agent 42 do that? Tick-by-tick options and utility terms
 cargo run --release -p accrete-cli -- trace --seed 1 --day 120 --ticks 24 --agent 42 --options

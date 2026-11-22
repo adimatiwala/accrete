@@ -898,7 +898,7 @@ Paste the following into Codex once the repository is open:
 
 This appendix records what was built from this specification, in the order it was built. It also records every place where the specification left a choice open (or was found not to work as written), what was chosen, and why. The base is commit `e5a15ce` (this document and a README only). All numbers below are defaults in `configs/default.toml`, which a test keeps identical to `Config::default()`.
 
-**Status against the plan:** Week 1 complete. Week 2 complete. Week 3 complete except for the Day 5 experiment suite. Week 4: droughts (random and scripted) and the metrics export are complete. Not yet built: snapshots and branching, route disruption, the random and omniscient baselines, and the behavioural-benchmark range files.
+**Status against the plan:** Weeks 1–4 are complete. Phase 2 tooling is in place: the scarcity rerun (A.18), run manifests with `accrete reproduce`, seed ranges, parallel seeds and aggregates (A.19), grid / Latin-hypercube parameter sweeps (A.20), cross-PR review fixes (A.21), and a SQLite run index with periodic state snapshots (A.22). Suggested next work in A.10: Parquet metrics, Sobol designs, surrogates, sensitivity/PDPs, and larger multi-seed Phase 2 campaigns.
 
 ### A.1 Repository and tooling
 
@@ -1052,7 +1052,7 @@ All four pathology counters were 0 on every seed. The emergent findings:
 3. Families upgrade crowded homes (37–54 shelter levels).
 4. Knowledge spreads through meetings. Barter happens, though at a low rate.
 
-Earlier calibrations (see A.4) showed the controlled-scarcity response the spec asks for. With food regrowth ×1 / ×0.4 / ×0.2, populations reached 605 / 157 / 42, **through fertility, not starvation**: a preventive check. These scarcity runs predate the trade, sharing, shelter and returns systems and have not been re-run.
+Earlier calibrations (see A.4) showed the controlled-scarcity response the spec asks for. With food regrowth ×1 / ×0.4 / ×0.2, populations reached 605 / 157 / 42, **through fertility, not starvation**: a preventive check. Those runs predated trade, sharing, shelters and experienced returns. **They were re-run with the full system on seeds 1–3 in A.18:** 498 / 142 / 34 people at day 300, still with no starvation deaths.
 
 **Honest negatives** (valid outcomes, per Section 1):
 * **Roads barely appear** (0–1 tiles in 300 days). Under the spec's benefit rule, only trails crossed by a household dozens of times a month qualify, and agents forage close to home.
@@ -1063,14 +1063,9 @@ These point to the next experiments: longer trips (more scarcity), and goods tha
 
 ### A.10 Not yet implemented, and suggested next steps
 
-* **Week 4 items:**
-  * Snapshots and branching: `serde` derives are already on most state, and the RNGs serialise.
-  * Route disruption.
-  * The random and omniscient baselines (`AgentKind` is stubbed).
-  * Behavioural-benchmark range files.
-* **Run storage:** each run should keep a manifest (seed, full config, commit, `Cargo.lock` hash), which reproduces it exactly given determinism, plus the daily metrics (CSV now, Parquet later), periodic snapshots, and a SQLite or DuckDB index of runs.
+* **Run storage:** manifests and `accrete reproduce` are done (A.19); the SQLite run index and periodic state snapshots (`--save-every`) are done (A.22). Still to do: Parquet metrics (CSV remains the daily export).
 * **Parameter → behaviour mapping:**
-  * a Latin-hypercube or Sobol design over parameters, with about 10 seeds per point;
+  * grid and Latin-hypercube sweeps over parameters, across seeds, are done (A.20); Sobol designs are still to do;
   * surrogate models (Gaussian process or gradient-boosted trees) from parameters to emergence metrics;
   * Sobol or Morris sensitivity indices and partial-dependence curves.
 
@@ -1089,3 +1084,387 @@ Seven issues from code review were fixed. Four of them change behaviour, so the 
 | **Trade-terms docs** | Comment and A.5 said distrust changes terms by up to 40 %. | Both say 50 %, matching the code (`1 + 0.5 × trust`). Leftover placeholder lines removed. |
 
 Two unit tests in `simulation/engine.rs` cover both outcomes of the join fallback.
+
+### A.12 Repository tooling: CLAUDE.md and CI path filtering
+
+This entry also covers the CLAUDE.md change that was merged before this changelog rule existed.
+
+**CLAUDE.md and the reminder hook (merged as PR 3).**
+* `CLAUDE.md` gives Claude Code sessions the commands (including single tests and the exact CI clippy line), the crate architecture and tick pipeline, the belief-versus-truth rules for decisions, and the invariants that keep results bit-identical. Those cover banned float methods, RNG streams, state hashing, re-recording golden hashes, keeping `default.toml` in sync, "motives, never outcomes", and the resource ledger.
+* A table maps each kind of code change to the CLAUDE.md section it affects. A project Stop hook (`.claude/hooks/claude-md-reminder.sh`) asks Claude once per new set of changes to review CLAUDE.md, when documented files changed on the branch but CLAUDE.md did not.
+* A PR template turns the same checks into a checklist.
+
+**CI path filtering (PR 4).**
+
+| Change | Rust job | Debug core tests | Viewer build |
+|---|---|---|---|
+| Docs only (`*.md`, `docs/`, `.claude/`, PR template, `.gitignore`) | skipped | – | – |
+| `accrete-cli` only | runs | skipped | skipped |
+| `accrete-viz` or `accrete-viewer` only | runs | skipped | runs |
+| Core, `configs/`, `tests/`, toolchain, dependencies, `.gitattributes`, `.github/`, or any unrecognised path | runs | runs | runs |
+
+* **Classification:** `.github/scripts/ci-changes.sh` classifies the diff. Unknown paths deliberately run everything, so a new kind of file cannot skip CI.
+* **Front-end-only changes skip the debug pass,** because front ends cannot change simulation results, and the debug pass exists to check that debug builds match the golden hashes.
+* **`ci-result` always reports** and treats a skipped Rust job as a pass, so it is the single check to require in branch protection.
+* **Triggers:** pull requests (including base changes, so a retargeted stacked PR is re-classified), pushes to `main`, merge-queue checks, and manual runs. Branches with an open PR were previously built twice, once for the push and once for the PR. A newer run for a PR cancels its older one. Every other run has its own concurrency group, so a push to `main` is never cancelled or dropped from the queue.
+* **Fail-safe, after review.** A review of the first version found four ways CI could skip tests and still pass:
+  * the classifier step ran without `pipefail`, so a broken script still passed;
+  * a failed `git diff` gave an empty list, so everything was skipped;
+  * `git diff --name-only` lists only the destination of a rename, so moving a scenario file into `docs/` skipped its tests;
+  * the gates required `== 'true'`, so a missing output skipped the Rust job.
+
+  The fixes:
+  * `shell: bash`;
+  * an empty or failed diff runs everything;
+  * `--no-renames` with NUL-separated names;
+  * the gates are `!= 'false'`;
+  * `ci-result` fails if the classifier produced no explicit flag.
+
+  PRs are now compared with the merge commit's first parent. Crate READMEs count as code.
+* **Changelog rule:** every PR, including tooling, CI and docs PRs, now adds an Appendix A section like this one. This is recorded in CLAUDE.md and the PR template.
+
+**Verification:**
+* The classifier was run on five real commits from this repository's history (spec-only and docs-only commits skip Rust; the simulation commits run everything).
+* `.github/scripts/test-ci-changes.sh` covers 16 cases in a throwaway repository and runs in CI before every classification: each category, renames, cross-category moves, deletions, non-ASCII names with spaces, an empty diff, and a missing or unknown base. Run against the first version of the classifier, it fails 5 of them.
+* The first live CI run of the `changes` job passed.
+### A.13 Snapshots and branching (Week 4 Days 1 and 3)
+
+| Decision | Rationale |
+|---|---|
+| **Format: versioned JSON** (`*.snap.json`, `SNAPSHOT_FORMAT = 1`) | `serde_json` is already a dependency and is built with `float_roundtrip`, so every float reloads to the same bits on both platforms. A binary format would be smaller (a day-100 snapshot of seed 1 with about 280 agents is 8 MB), but would add a dependency; it can replace JSON later behind the version number. |
+| **What is saved** | Everything that affects later ticks or the exported metrics: tick, config, world, agents with their memories, all four RNG streams, weather, ledger, settlement tracking, the day's counters, daily metrics, death records, pathology counts and the run totals. |
+| **What is not saved** | Derived data, rebuilt on load: line-of-sight masks, the tile-to-homes index, exploration-ray caches, and per-tick rates. Inspection buffers, which start empty: the event log, the graveyard, decision traces and intents, and the pathology log. Pathfinding scratch. None of these affects results. |
+| **Integrity check** | Each snapshot stores the state hash at save time. Loading recomputes it and rejects a mismatch, so an edited, truncated or incompatible file fails loudly instead of diverging. |
+| **Interventions through the config only** | `Simulation::set_config` swaps the configuration of a resumed run and rebuilds rates and derived data. A drought branch adds a `[[weather.scripted]]` entry. Scripted droughts never draw from the `weather` stream, so both branches keep identical random droughts (tested). |
+| **CLI** | `run --save` and `run --load`, and `branch`, which loads one snapshot twice, runs both branches for the same number of days, and writes a per-day comparison CSV (control, intervention, and the difference for population, births, deaths, food, homes, settlements, clustering, foraging radius, trades and drought area). |
+
+**Verification:**
+* Saving at tick 500 and resuming to tick 1,000 reaches the committed golden hash.
+* A saved and reloaded snapshot re-serializes byte-identically.
+* A straight 300-day run of seed 1 and a run saved at day 100 and resumed both end on hash `04841f5e6f62a0cf`.
+* In a first branch on seed 1, a drought from day 100 for 120 days (radius 24, severity 0.6) ended at day 300 with 483 people against 513 in the control, 2 hamlets against 3, and slightly longer foraging trips. That is one seed and one intervention, not yet a finding.
+
+**Review fixes** (from a review agent's pass over this PR; restore itself held up, with mid-day, in-drought, at-the-cap and post-extinction snapshots all resuming bit-identically):
+* **Extinct branches.** When one branch died out, the comparison CSV stopped at that day and the summary compared different days. Branches now keep running after extinction (population 0), rows are aligned by day with empty cells for a missing side, and the summary names both days if they differ.
+* **Labels.** A label containing `/` panicked after the control had run, and identical labels silently overwrote each other's files. Labels are validated before anything runs, and `branch` rejects identical labels.
+* **Population cap.** Lowering it below the current population tripped the invariant check. `set_config` now returns an error for that, and for any change to `[world]`, which is already generated.
+* **Unloadable files.** A NaN anywhere in the state was saved as JSON `null`, giving a file that could never be loaded. `save_snapshot` now checks that the file loads back to the same state before writing it.
+* **Late save errors.** An unwritable `--save` path was only reported after the run. It is now checked first.
+* **Partial integrity check.** The state hash does not cover metrics, the ledger, settlement tracking and other bookkeeping, so edits to those loaded silently. Snapshots now also carry a hash of their whole JSON body, checked on load. A file from a build with a different config schema is reported as such, not as "modified".
+* **Debug settings counted as interventions.** `--check` and the event-log size changed the config digest, so a resumed run with `--check` was reported as an intervention and hashed differently. `Config::digest` now ignores debugging-only settings. No golden hash changed, because default runs use the defaults.
+* **Pinned layout.** The snapshot file's bytes for seed 1 at tick 100 are now a golden value, so any change to the layout or a field's meaning forces a deliberate `SNAPSHOT_FORMAT` bump.
+* **CLI checks:** `--seed` with `--load` is rejected; zero-day droughts are rejected; a drought starting after the branches end gets a warning.
+* **New tests:**
+  * body-hash rejection of edited metrics and ledger;
+  * schema messages;
+  * refusing non-finite state;
+  * `set_config` validation;
+  * debug settings not changing hashes;
+  * mid-day, in-drought and at-cap resumes;
+  * golden snapshot bytes;
+  * a drought starting on the snapshot day taking effect the next day;
+  * label and save-path checks;
+  * day-aligned comparison rows.
+* **Windows CI fix.** The save-path test used `/dev/null/x.snap.json` as an unwritable path. On Windows that resolves to `C:\dev\null\x.snap.json`, which can be created, so the test failed there. The test now uses a path under a regular file, which no platform can create. Only the test changed; no hash moved.
+
+### A.14 Baselines and behavioural benchmarks (Section 10, layers 3 and 4)
+
+| Decision | Rationale |
+|---|---|
+| **Random baseline** (`sim.agent_kind = "random"`) | Shuffles the scored options, moves Idle last, and takes the first one with a reachable target, so each action is valid but chosen at random, and the agent idles only when nothing else is reachable. It draws from the `agents` stream, which normal agents never use, so it has its own stream (as Section 10 asks) without changing any golden hash. |
+| **Omniscient baseline** (`sim.agent_kind = "omniscient"`) | Same decision logic, perfect knowledge, the **same memory limits**. On every observation the agent knows the whole map's terrain, and for each resource it remembers the *nearest* tiles holding it (true amounts, ring scan nearest-first, up to its pool size), likewise the nearest homes. Routes use true costs. Keeping the memory limits means the gap to normal agents measures what limited *sight and stale memory* cost, not what extra memory would buy. |
+| **Benchmark ranges** in `tests/benchmarks/primary_seed.toml` | Seed 1 at day 100: population, starvation deaths, hunger, homed share, the four pathology counters, walking per unit of food (with a lower bound, to catch agents that stop moving), how much more often homes sit near good land than land in general does, generational turnover (births and old-age deaths), and not hitting the cap. The observed values when the ranges were set are written next to each range. Golden hashes show that something changed; these show whether behaviour got worse. |
+| **Baseline ordering** as a test | At day 60, normal agents must reach at least 2× the random population and at most 1.05× the omniscient one. |
+
+**First results** (seed 1, 100 days):
+
+| Agents | Population | Starvation deaths | Tiles walked per unit of food |
+|---|---|---|---|
+| Random | 34 | 58 | 5.49 |
+| Normal | 284 | 0 | 0.48 |
+| Omniscient | 318 | 0 | 0.25 |
+
+Normal agents are far better than random, so the decision logic works. Limited sight and memory cost about 12 % of the population and nearly double the walking, so the knowledge limits genuinely constrain behaviour. Random agents also trip the oscillation detector thousands of times, a useful check that the detector responds.
+
+**Review fixes** (from a review agent's pass over this PR):
+* **Roads invisible when choosing.** Omniscient agents routed with true costs but *scored* options with no-road costs, ignored roads when deciding whether to upgrade a trail, and checked "starved beside food" with remembered costs. `decision::omniscient` and `decision::believed_path` now give them the true world wherever a belief is read.
+* **Wrong home evicted.** A tile holding several homes could overflow the home pool and evict the home the agent stood on. The cap is now checked per home.
+* **Full-map scans.** The ring scan visited every cell of each ring's square and never stopped while the world had fewer homes or resource tiles than a pool holds, so it scanned the whole map on every observation (about 1.1 s per simulated day early in a run). It now walks only each ring's perimeter and caps each pool at what the world actually holds. Thirty omniscient days take 1.3 s, down from 3.5 s.
+* **Unreachable food crowding out reachable food.** A nearest-but-unreachable resource (across water, say) was re-added on every observation. Entries still on their unreachable cooldown are now skipped, so the pool fills with other places; they are offered again after the cooldown. The skip must consult `failed_targets`, not the resource pool: `set_resources` replaces that pool on every re-observe, so a cooldown stored only there was wiped after `reobserve_ticks` (6) instead of lasting the full window (48). The existing test now re-observes inside the window and fails without the fix.
+* **Idle not last.** The random baseline's comment said Idle was a last resort, but it was shuffled like everything else. It is now moved last, so random agents idle only when nothing else is reachable. This raised the random baseline at day 100 from 24 to 34 people.
+* **Benchmarks:**
+  * "homes near fertile land" was nearly trivial, because 94 % of all land qualifies. It is now the lift over the land average (0.10 observed, range ≥ 0.03).
+  * Walking per unit of food gained a lower bound.
+  * Boolean metrics such as `at_cap` can be range keys.
+  * A malformed ranges file names the key at fault.
+  * The observed baseline ratios are recorded next to their limits.
+* **New tests:** the home pool on shared tiles; deterministic, pool-respecting omniscient observation; the cooldown skip; omniscient travel estimates using true roads; omniscient runs staying on land and round-tripping through snapshots; and the random baseline being deterministic with Idle last.
+
+### A.15 Route disruptions (Week 4 Day 2)
+
+| Decision | Rationale |
+|---|---|
+| **Effects:** `Blocked` (impassable) or `Slowed { factor }` (entering costs `factor` times the movement points) | The spec's "temporarily impassable or expensive path tiles". Integer factors keep movement exactly reproducible. |
+| **Scheduled in `[[disruption.scripted]]`**, started and ended in the daily phase | The same pattern as scripted droughts. A disruption covers either the land tiles in a `center`/`radius` area, or the `busiest_tiles` most-travelled land tiles **without homes** on the start day. |
+| **Busiest tiles exclude homes** | The first version picked home tiles, which carry the most traffic, so it flooded villages instead of cutting routes, and one agent stayed on its blocked home tile for the whole disruption. A route failure should hit paths. An explicit area still covers everything in it, homes included (a local flood). |
+| **State outside `Tile`** | `Simulation::disruptions` is authoritative, hashed and saved in snapshots (`SNAPSHOT_FORMAT` 3). `World::disruption_at` is a derived index. Keeping it out of `Tile` leaves the world-generation hash unchanged. |
+| **Agents are never told** | Agents plan with what they believe. Seen disruptions live in their own memory pool (separate from trails and roads); a planned step that turns out to be blocked is also recorded; and the agent re-plans. A restored tile looks normal when next seen. Agents caught in a blocked area wade out: a blocked tile can be entered only from another blocked tile, at 4× its cost (`movement::WADE_FACTOR`), so nobody wades in. |
+| **CLI:** `branch --disrupt DAY:DAYS:block\|slowF:X:Y:RADIUS` or `…:busiest:N` | Comparison CSVs gain `disrupted_tiles`, `tiles_moved` and `route_failures`, and the map frames draw disrupted tiles. A daily `disrupted_tiles` metric is added. |
+
+**Golden hashes were re-recorded with no behaviour change.** The new `[disruption]` config section changes the config digest, and changed-tile memory hashes the new field. A 300-day run of seed 1 against the previous build produced identical metrics on every day, apart from the new all-zero `disrupted_tiles` column, and an identical death log.
+
+**Tests:**
+* **Unit:** cost rules, area and busiest-tile selection (busiest first, homes skipped), overlapping effects keep the worst, and the index clears when a disruption ends.
+* **Scenario `blocked_route`:** an agent that planned through a gap notices the block once the gap is in sight, never steps on it, and reaches the food through the other gap.
+* **Whole world:** blocking the 12 busiest tiles from day 60 for 15 days on seed 1. Nobody steps onto a blocked tile, the 4 agents caught on them leave within hours, invariants hold, the tiles are restored afterwards, and random droughts match the control.
+
+**First result** (seed 1, the 20 busiest non-home tiles blocked from day 100 for 20 days): failed route plans rose from 6 to 87 and walking rose by 5 % during the disruption, while population barely changed (339 against 341 at day 140). The road network is still thin by then, so there are many alternative routes. One seed, not yet a finding.
+
+**Rebased onto the reviewed snapshot and baseline PRs:**
+* **Golden snapshot bytes re-recorded.** `snapshot_seed1_t100` was re-recorded for `SNAPSHOT_FORMAT` 3 (disruption memory layout).
+* **`--disrupt` checks match `--drought`.** A zero-day disruption and `busiest:0` are rejected; `busiest:0` would otherwise have become a radius-0 disruption at tile (0, 0). A disruption starting after the branches end gets a warning. A disruption-only intervention is detected with `Config::differs_in_results`, like every other intervention.
+* **Checked `set_config`.** The whole-world disruption test now fails if `set_config` rejects its config, instead of ignoring the `Result`.
+
+**Review fixes** (from a review agent's pass over this PR; it found no determinism, snapshot or blocked-tile violations, and resuming mid-disruption, including overlapping disruptions, matched an uninterrupted run):
+* **Flooded homes retried every tick.** A route failure records the target in `failed_targets`, but only exploration checked it, so residents locked out of a flooded home re-planned to it almost every tick (113 failures in 10 days for one agent). `decision::evaluate` now drops any option whose target is on that cooldown, unless the agent is already there. No golden hash changed: normal runs never hit this.
+* **`slow255` could cancel a block.** A slow factor of 255 tied with `Blocked` when overlapping effects keep the worst, so the tile could stay passable. Slow factors are now limited to 2–254.
+* **Disruptions from TOML were not validated.** `ScriptedDisruption::validate` rejects zero days, slow factors outside 2–254, and entries setting both `busiest_tiles` and `radius`. It runs on config load, in `set_config` and for `--disrupt`.
+* **Huge radii.** The radius is clamped to the map size, so a radius beyond 46,340 can no longer overflow or loop for minutes.
+* **Overlays.** The move-cost overlay and the viewer's tile inspector now show disrupted costs.
+* **New tests:** validation (including through TOML and `set_config`), the radius clamp, residents of a flooded home waiting out the cooldown (fails without the fix) and agents caught inside wading out, wading rules for costs and A\*, and the busiest-trails test now checking that nobody enters a blocked tile from open ground.
+* **Trapped agents wade out.** An agent inside a blocked *area* (not at its edge) could not move until the flood ended, and kept re-trying routes because its 8 failed-target slots overflowed. Now a blocked tile can be entered from another blocked tile at `WADE_FACTOR` (4) times its cost, in both A\* and movement, so agents wade out but nobody wades in. In the flooded-home test, 3 of the 4 agents caught inside left within two days; the fourth chose to rest where it stood. No golden hash changed, and a 200-day run of seed 1 took the same time.
+* **Dedicated disruption memory.** Disruptions used to share the 32 changed-tile slots with trails and roads, so a large flood could push path memories out and agents could forget blocked tiles for lack of room. Disruptions now have their own pool (`memory.disruption_slots = 1024`), kept sorted by tile for binary-search lookups. When full, the entry farthest from the agent is replaced. Trails and roads stay in the 32-slot changed pool. A radius-15 flood (~519 tiles) fits whole. `SNAPSHOT_FORMAT` is 3. Golden hashes were re-recorded; a 200-day run of seed 1 matched the previous build on every metric and the death log, apart from the new memory layout.
+* **New tests:** floods do not crowd out roads (unit and whole-world); farthest-first eviction; equal-distance ties; the pool stays sorted; newborns inherit disruptions; re-seeing a restored tile clears the belief; agents hold more than 32 disruption tiles during a large flood; after a busiest-tile flood ends, at least one agent still remembers a blocked tile.
+### A.16 Viewer experiment controls (Week 4 Day 5)
+
+The spec's "load snapshot, select drought or route disruption, branch and compare", in the interactive viewer, all keyboard-driven:
+
+| Key or flag | Action |
+|---|---|
+| `K` / `L` | Save a snapshot to `results/viewer_seed…_day…_t….snap.json`; reload the last one (a rewind). |
+| `--load FILE` | Start from a snapshot. |
+| `I` | Cycle intervention presets: a drought around the selected tile (radius 16, 60 days, −60 % regrowth), cut the 20 busiest routes (20 days), flood the area round the selected tile (radius 3, 30 days, impassable), or halve food regrowth. |
+| `B` | Branch from now. An exact copy (through a snapshot round trip) gets the intervention, and both simulations then step in lockstep. |
+| `V` / `X` | Switch the branch on screen; drop the branch. |
+| `--intervene N` (`--view-b`) | Branch at start, for headless screenshots. |
+
+**Decisions:**
+* **Presets change world conditions only,** through the same config paths as `accrete branch` (scripted droughts, `[[disruption.scripted]]`, regrowth rate), starting on the branch day. Interventions centre on the selected tile, or on the map centre when nothing is selected.
+* **What's shown:** the banner names the branch, the preset and which side is on screen; the chart overlays the other branch's population in orange with the live difference; disrupted tiles are drawn in red (blocked) or orange (slowed).
+* **Speed:** while branched, the per-frame step budget is halved, because two simulations step per tick.
+
+**Verification:** headless screenshots after loading a day-60 snapshot of seed 1 and branching with `--intervene 1` (cut routes, viewing the intervention) and `--intervene 0` (drought, viewing the control) show the banner, the red disrupted tiles and the overlaid population line. The viewer only calls `Simulation::step`, `snapshot_json` and `set_config`, all of which are tested in core.
+
+**Rebased onto the reviewed PRs:** `set_config` now returns a `Result`, and the viewer ignored it. A rejected intervention would have shown an unchanged copy labelled as the intervention. Branching now reports the error and does not branch. CI does not lint the viewer, so the compiler warning alone would not have caught this.
+
+**Review fixes** (from a review agent's pass over this PR; the control really is unchanged, both simulations stay on the same tick, and nothing in the viewer feeds back into simulation state):
+* **`--intervene` ignored `--select`.** The branch was made before the selection was set, so area presets centred on the map centre. The selection is now set first.
+* **`--load` with `--day`, `--seed` or `--config`.** `--day` ran that many extra days on top of the snapshot, and `--seed` and `--config` were silently dropped. `--day` is now the day to show (a warning is printed if the snapshot is already past it), and `--seed` or `--config` with `--load` is an error.
+* **`--intervene` failed silently.** An unparseable or out-of-range preset now exits with an error, and so does a branch that fails at startup.
+* **Snapshots of a branch.** `K` while branched now adds `_control` or `_intervention` to the file name, so saving both sides at one tick no longer overwrites. `L` says when the reloaded state carries an intervention.
+* **New worlds after `--load`.** `G` and `S` no longer carry the snapshot's scripted droughts and disruptions, pinned to its days and tiles, into a new world. `L` now does the same: it syncs `seed`/`config` from the reloaded simulation and strips scripted interventions, matching `--load`.
+* **Agent ids across branches.** Each branch numbers its own newborns, so after `V` (or `L`) the selection is kept only when `id < next_id` at the split (and the agent still exists). Using `born_tick < from_tick` was wrong: founders have `born_tick = 0`, so a branch at tick 0 cleared every selection, and agents born on the last step before the split were dropped too.
+* **`--day` on an exact-day snapshot** no longer prints a spurious "past --day" warning.
+* **Chart.** The population scale covers both branches, and the legend mentions the orange line only when branched. `V` with no branch now says so.
+* **New test, now run in CI:** every preset is accepted by `set_config`, starts on the branch day and changes the outcome, and a control stepped alongside a branch matches an unbranched run. CI's viewer step now runs `cargo test --release -p accrete-viewer`.
+
+### A.17 Emergence experiment suite (Week 3 Day 5)
+
+The three paired ablations from the Day 5 plan, as `accrete experiments`:
+
+| Experiment | Intervention | What it measures |
+|---|---|---|
+| `trade` | `social.trade_enabled = false` | Whether barter changes population, foraging, and clustering |
+| `trails` | `trails.enabled = false` (formation off; traffic still counted) | Whether worn trails thicken the path network and shorten trips |
+| `selfish` | `infrastructure.household_weight = 0` and `social.reciprocity_enabled = false` | Whether household concern and reciprocity change outcomes |
+
+**Design:**
+* **Fresh worlds, shared control.** Each seed starts from world-gen (not a snapshot), so early emergence is in scope. The control runs once per seed and is reused against every intervention.
+* **Config-only interventions.** Each ablation goes through the same `Config` knobs a manual `--set` would use, and `Config::differs_in_results` asserts that the intervention actually changes results.
+* **Outputs.** Per-day `control_vs_<label>_seedN_compare.csv` (same columns as `branch`, plus travel-per-food, food traded, tips shared, trail/road tiles and pathology counters), plus `emergence_summary.csv` with final-day metrics and **cumulative** trades across the run. State hashes are recorded so a non-diverging pair is visible.
+* **CLI:** `accrete experiments --seed 1,2 --days 100 -o results/emergence`, with `--only trade,trails,selfish`, `--every`, `--check` and `--set` on the shared base.
+
+The Week 3 behavioural scenarios (complementary and identical trade, reciprocity terms, busy-trail roads, selfish road reluctance) were already in the tree; this suite is the multi-day headless comparison the Day 5 plan asked for.
+
+**First results** (seed 1, 100 days; trades are run totals):
+
+| Pair | Population | Trades | Trail tiles | Notable |
+|---|---|---|---|---|
+| trade | 284 → 286 | 107 → 0 | 7 → 2 | No barter under the intervention; hashes diverge |
+| trails | 284 → 283 | 107 → 95 | 7 → 0 | No worn trails; forage radius 2.92 → 3.11 |
+| selfish | 284 → 283 | 107 → 87 | 7 → 3 | Hashes diverge; slightly fewer trails |
+
+One seed and 100 days, not yet a finding. Phase 2 (Section 9) is multi-seed averages.
+
+**Tests:** each ablation changes the config; `--only` rejects unknown names and dedupes; a 40-day paired run on seed 1 diverges for every experiment, with zero trades under `no-trade` and zero trail tiles under `no-trails`.
+
+**Review fixes:**
+* `--days 0` and an empty seed list are rejected before any run.
+* An ablation that is a no-op under the base config (e.g. `--set social.trade_enabled=false` then `--only trade`) exits with an error instead of panicking on `assert!`.
+* `--only` duplicates are dropped in order; the trails description matches what `trails.enabled` actually does (formation, not a separate cost gate).
+
+### A.18 Scarcity rerun with the full system (Section 9, "Scarcity")
+
+The scarcity results quoted in A.9 came from the calibration runs described in A.4, made before trade, knowledge sharing, shelters and experienced foraging returns existed. This entry re-runs them with everything in place.
+
+**How:**
+* `accrete experiments` gains two levels, `scarcity40` and `scarcity20`, which scale the base config's `resources.food_regrowth` by 0.4 and 0.2. They are the original calibration's levels, and they compose with `--set`. A base regrowth of 0 is rejected up front.
+* Run: `accrete experiments --seed N --days 300 --only scarcity40,scarcity20` for seeds 1–3, each from a fresh world with a shared control. To check for equilibrium, both levels were also run alone for **900 days** (`run --set resources.food_regrowth=0.06` and `=0.03`).
+* **Summary fixes made along the way:**
+  * the `deaths_deprivation_*` columns held the **final day's** count, not the run's;
+  * the summary now has run totals (births, deaths by cause, home moves), **births per adult-day** (per-capita fertility), and mean lifespan, which is left empty when no one born in the run has died;
+  * the header is a single constant, and tests check rows against it by name and against each side's metrics file.
+
+**Results at day 300** (seeds 1 / 2 / 3; the means are of the three seeds):
+
+| Food regrowth | Population | Births | Births per adult-day | Starvation deaths | Settlements (hamlets + forming) | Clustering R |
+|---|---|---|---|---|---|---|
+| ×1.0 | 513 / 522 / 458 (mean 498), still growing | 641 | 0.0122 | **0** | 1.7 + 2.0 | 0.49 |
+| ×0.4 | 148 / 146 / 133 (mean 142) | 219 | 0.0096 | **0** | 0 | 0.94 |
+| ×0.2 | 40 / 35 / 26 (mean 34) | 58 | 0.0055 | **0** | 0 | 1.17 (n = 11–18 homes) |
+
+**900-day runs:** ×0.4 stays between 128 and 158 people from day 300 to 900 on every seed. ×0.2 drifts from 25–40 down to 22–30 by about day 500, then holds to day 900. There were no extinctions and no starvation deaths.
+
+**What this shows** (three seeds: a pattern, not yet a Phase 2 finding):
+1. **Population adjusts through births, not starvation.** No agent died of deprivation in any of the 15 runs (nine 300-day runs, six 900-day runs). Total births fall about 11×, but **per-capita fertility falls only about 2.2×** (0.0122 → 0.0096 → 0.0055 births per adult-day). The rest comes from having fewer adults, a feedback in which fewer births mean fewer future parents.
+   * The fall in fertility comes mostly from **food**, partly through the hard reproduction requirement and partly through the food-security motive. A review measured seed 1 over every adult-day: the "no food surplus" requirement (`life.reproduce_food_carried` / `reproduce_food_stored`) blocks 8 % / 12 % / 23 % of adult-days at ×1 / ×0.4 / ×0.2, and the food-security motive falls below 1 for 27 % → 44 % of eligible adults. Perceived land is below 1 for 94–99 % of eligible adults at *every* level, so it barely tells the levels apart.
+   * **Caveat:** an agent worn down by deprivation dies when its health ceiling reaches 0, which is recorded as an "old age" death. So "no starvation deaths" means nobody's health hit 0 from hunger; it does not mean deprivation had no effect.
+2. **Scarce populations reach a steady state.** At ×0.4 it is about 130–160 people, and at ×0.2 about 22–30, both from roughly day 300–500 (see the 900-day runs). The full-food control is still growing at day 300 and is *not* at equilibrium, so the day-300 ratios understate the eventual gap.
+3. **At ×0.4, no settlements form and homes are randomly placed** (R ≈ 0.94, against 0.49 with full food). Clustering seems to depend on local surplus. At ×0.2 no claim is made: a hamlet needs at least 5 homes and 15 residents, 40–60 % of the whole population, so the threshold alone rules hamlets out. R there comes from only 11–18 homes, with a standard error of about 0.12–0.16, and seed 2 gives 0.88.
+4. **Migration does not clearly rise.** Total home moves fall from 241 to 26 and 19. Per final-day resident the picture is mixed (0.48, 0.18 and 0.56, the last on a tiny denominator). The spec expected scarcity to drive migration. A proper measure (moves per person-year, distance moved) is needed before drawing a conclusion; left open for Phase 2.
+5. **Other measures, with their spread:**
+   * **Hunger:** mean hunger over the last 30 days is similar on average (0.19 / 0.18 / 0.18), but individual seeds range from 0.16 to 0.22 at ×0.2.
+   * **Foraging radius:** shorter on average (3.65 → 2.97 → 2.63 tiles), though not on every seed (seed 3 is longer at ×0.2).
+   * **Standing food:** slightly *higher* under scarcity at day 300, because the much smaller population leaves most tiles near capacity.
+   * **Lifespan** (221–225 days) cannot detect scarcity here. Only cohorts born by about day 60–90 can have died by day 300, and they grew up while food was still plentiful; at ×0.2 every one of them reached the frailty-free maximum (225 days).
+6. **Comparison with the original calibration:** 142 / 34 against 157 / 42. The two use different code versions (experienced returns is itself a newer reproduction motive), so this does not show that trade, sharing or shelters leave the scarcity response unchanged. Testing that needs the trade and selfish ablations run at a scarce regrowth rate (`--set resources.food_regrowth=0.03`).
+
+**Tests:**
+* Both levels scale the base rate and have valid labels.
+* A 30-day ×0.2 pair has less standing food, no more people, and a diverging hash.
+* Summary rows match the header by column name and use run totals.
+* An end-to-end `run_suite` test checks the summary's totals against each side's metrics file.
+* A no-op scarcity (base regrowth 0) is rejected before anything runs.
+
+**Review fixes** (from a review agent that reproduced the day-300 table exactly):
+* Test directories could collide on macOS's microsecond clock (a flaky failure about 1 in 19 runs); they now use a counter.
+* The no-op guard ran after the control and earlier pairs had already run; it now checks every experiment before any run.
+* Several claims were narrowed to match the evidence: the mechanism behind the fertility fall, equilibrium (now backed by the 900-day runs), settlements at ×0.2, lifespan, the comparison with the calibration, and per-seed spread.
+
+### A.19 Phase 2 tooling: manifests, seed ranges, parallel seeds, aggregates
+
+Phase 2 (Section 9) asks for results across many seeds with uncertainty, and A.10 asks for runs that can be reproduced from a record. This entry adds both. Parameter sweeps come next.
+
+| Piece | What and why |
+|---|---|
+| **Run manifests** (`<label>_seed<N>_manifest.json`) | Written by `run::drive`, so every `run`, `branch` and `experiments` run has one. It records how to recreate the run (a fresh world from seed and config, or a snapshot file with its byte hash plus the config applied on load), the tick count, the start and final state hashes, the full config, the command line, and provenance: accrete version, git commit and dirty flag (embedded by `crates/accrete-cli/build.rs`, which works offline), and a hash of `Cargo.lock`. Snapshot paths are stored absolute; if one has moved, the copy next to the manifest is used. |
+| **`accrete reproduce <manifest>`** | Re-runs the manifest and checks the final state hash, exiting 1 if it differs. It notes when the current build's commit or `Cargo.lock` differs from the recording one, or when the recording build was dirty. It refuses a snapshot whose bytes have changed. Determinism makes the final hash a complete check. |
+| **Seed ranges** (`--seed 1-10`) | `seed::parse_seed_list` in core, for `run`, `experiments`, `world` and `render`. An integer range expands; anything else is one seed, so text seeds with a dash (`river-valley`) still work. Duplicates are dropped; backwards or oversized ranges (over 10,000) are rejected. |
+| **Parallel seeds** (`experiments --jobs N`) | Seeds are independent simulations, which the determinism rules allow to run in parallel; each seed's runs stay sequential. `parallel::map_ordered` returns results in seed order, so every output file is byte-identical to `--jobs 1` (tested). Four seeds ran in 2.2 s with `--jobs 4`, against 6.4 s sequentially. |
+| **Aggregates** (`emergence_aggregate.csv`) | Per experiment and outcome, over seeds: the mean control and intervention values, the mean **paired** difference (intervention minus control, same seed) with its sample SD and 95 % t-interval, and how many seeds went up or down. Cells are left empty where a statistic is undefined (one seed). Outcomes: population, total births, births per adult-day, starvation deaths, home moves, trades, trail tiles, road tiles, hamlets, clustering R, foraging radius, and walking per unit of food. A summary is printed at the end. |
+
+**Tests:**
+* A fresh run and a run resumed with an intervention both reproduce from their manifests; a manifest with one tick fewer does not; a changed snapshot file is refused.
+* Manifests round-trip, and other format versions are rejected.
+* Seed-list parsing covers ranges, dashed text seeds, deduplication, and backwards, oversized and empty lists.
+* `map_ordered` keeps order for 1–64 jobs.
+* The t-interval is checked against hand-computed values.
+* The aggregate pairs differences by seed and leaves undefined cells empty.
+* Three seeds give byte-identical summary, aggregate and metrics files with `--jobs 1` and `--jobs 3`.
+
+**Review fixes** (from a review agent's pass over this PR):
+* **Stale dirty flag.** The build script re-ran only on git HEAD and index changes, so a build made after an unstaged edit could record `git_dirty: false`. It now re-runs when any workspace source, manifest, config or the lock file changes. It finds git's files with `git rev-parse`, so a git worktree (where `.git` is a file) no longer forces a full rebuild every time, and it sets `GIT_OPTIONAL_LOCKS=0` so `git status` can't trigger its own re-run.
+* **Manifests depended on `--jobs`.** The recorded command line included it; `--jobs` is now left out (it cannot change results), and arguments are recorded lossily, so a non-UTF-8 argument no longer panics after a run. An end-to-end test now compares *every* output file, manifests included, between `--jobs 1` and `--jobs 3`.
+* **Unreproducible `run --load X --save X`.** The start snapshot was overwritten. This is now refused before running.
+* **Moved results folders.** Manifests also store the snapshot path relative to the manifest, and `reproduce` tries each candidate (relative, as recorded, next to the manifest) and takes the first whose bytes match the recorded hash. Output paths are relative to the manifest and include every image written.
+* **`reproduce` checks more.** It now checks that the snapshot's seed matches, that start + ticks = final, and it fails (exit 1) when the start state differs.
+* **A failing seed under `--jobs`.** Other seeds used to keep starting. Now no new item starts after a failure, and the error names the item that failed. `--jobs 0` is rejected.
+* **t-values above 30 degrees of freedom** jumped to 1.96, about 4 % too narrow. They now use a Cornish-Fisher expansion, within 0.001 of exact (2.040 at df 31). Aggregates count only seeds where both sides are finite.
+* **Seed lists:**
+  * `1 - 3` (spaces) is a range;
+  * half-written (`1-`, `-3`) and hex (`0x1-0x3`) ranges are rejected instead of silently hashed;
+  * deduplication uses a set.
+  * **Behaviour change:** an argument like `2-3` used to be a hashed text seed and is now the range 2–3.
+* **New end-to-end tests** (`crates/accrete-cli/tests/cli.rs`, using the real binary):
+  * `reproduce` exit codes 0 and 1;
+  * every output file identical across `--jobs`;
+  * `--save` over `--load` refused;
+  * a moved results folder and both branch arms reproducing;
+  * `--jobs 0` rejected.
+### A.20 Parameter sweeps (A.10, "parameter → behaviour mapping")
+
+`accrete sweep` runs the model over a set of parameter points, each on several seeds, and reports how the outcomes respond.
+
+| Piece | What and why |
+|---|---|
+| **Grid** (`--param section.key=a,b,c`, repeatable) | The cartesian product of the listed values, with the first parameter varying slowest. Booleans and other non-numeric keys work here. |
+| **Latin hypercube** (`--lhs N --param section.key=lo..hi`) | N points that cover each parameter's range evenly: every parameter gets exactly one point in each of its N strata, at a random spot inside the stratum. Numeric keys only; integer keys stratify the integers in `[ceil(lo), floor(hi)]` (with repetition when N exceeds that count). The design draws from a new RNG stream, `Design = 9`, appended under the never-renumber rule. Simulations never use it, so no hash changes. `--design-seed` makes a design reproducible. |
+| **Validation first** | Every point is applied to the base config (`run::try_apply_override`) and must pass `Config::validate` before anything runs. A bad key or value, a non-finite number, a range in a grid, a list in an LHS, a duplicate key, a debugging-only grid that does not change results, `--jobs 0`, or more than 100,000 runs/points is an error up front. `--set` now exits with status 2 on a bad override instead of panicking. |
+| **Parallel, deterministic** | (point, seed) pairs run through `parallel::map_ordered`, and outputs are byte-identical whatever `--jobs` is (tested). Each run writes `pNNN_seedS_*` metrics and a manifest, so any single run can be checked with `accrete reproduce`. A panic in one run names the point and seed and writes no summary. |
+| **Outputs** | `sweep_runs.csv` and `sweep_points.csv` first; `sweep_design.json` last (and only on success), including the `--set` list and the full base config so a finished design can be audited. Parameter values in the CSVs are canonical (parsed and re-printed), so `0.10` and `0.1` are one grid point. |
+
+**Demo** (`--param resources.food_regrowth=0.03,0.06,0.1,0.15 --seed 1-3 --days 150 --jobs 8`; 12 runs in 15 s):
+
+| Food regrowth | Population, day 150 (mean, 95 % CI) | Births per adult-day | Clustering R |
+|---|---|---|---|
+| 0.03 | 71 [52, 89] | 0.0046 | 1.06 |
+| 0.06 | 165 [141, 189] | 0.0108 | 0.93 |
+| 0.10 | 263 [194, 331] | 0.0147 | 0.82 |
+| 0.15 | 353 [271, 435] | 0.0185 | 0.68 |
+
+A smooth dose-response: more food gives more people, higher per-capita fertility and tighter clustering, consistent with A.18. Three seeds and 150 days, so this demonstrates the tool rather than establishing a result.
+
+**Tests:**
+* Parameter parsing: values, ranges, and bad input.
+* Grids are cartesian products in the stated order; numeric aliases (`0.1`, `0.10`, `+0.1`) collapse to one point.
+* A Latin hypercube puts one point in every stratum, is reproducible from its design seed, and gives integers for integer keys.
+* Invalid designs and points are rejected, including huge grids (before they are built), non-finite values, and configs `Config::validate` refuses.
+* An end-to-end sweep writes the expected rows and per-run manifests, with byte-identical files for `--jobs 1` and `--jobs 4`; each run reproduces from its manifest.
+* CLI: `--jobs 0` and semantically impossible / no-op points fail before anything is written.
+
+**Review fixes:**
+* **`Config::validate`.** Floats must be finite; non-preference quantities non-negative; fractions in `[0, 1]`; every `*_min` ≤ `*_max`; world size and movement points at least 1; `memory.disruption_slots ≥ 1`. Called from TOML load, `set_config`, and every `--set` / sweep point.
+* **Canonical grid values** and **integer LHS strata** that stay inside the stated range.
+* **Size checks** before allocating a huge cartesian product; **overflow-safe** `points × seeds`.
+* **No-op grid points** (debugging-only settings) refused; overlapping `--set` / `--param` keys warned.
+* **`--set` recorded** in the design; design file written only after a successful sweep; label width grows past 999 points.
+* A failing run under `--jobs` names the point and seed; `--set` errors exit 2 instead of panicking.
+
+### A.21 Cross-PR review fixes (stack tip)
+
+Findings from review agents over PRs 5–12, fixed on `feat/sweeps` (the tip contains every layer):
+
+**Core (PRs 5–7):**
+* Omniscient observation skips `Blocked` tiles (except the agent's own), so the baseline no longer plans Rest into flooded homes.
+* `set_config` refuses a mid-run `sim.agent_kind` change, and refuses new scripted droughts/disruptions whose `start_day` is already past. Active disruptions stay in saved state when a scripted entry is removed.
+* Lowering `memory.disruption_slots` trims each agent's pool (farthest first).
+* A blocked movement step no longer counts as pathology "progress", so the stuck detector can fire.
+* `memory.disruption_slots = 0` is rejected by `Config::validate`.
+
+**CLI / Phase 2 (PRs 9–12):**
+* Writing a manifest refuses to overwrite a different run (same label/seed/out); pick another `--label` or `-o`.
+* Under `--jobs`, write/save failures `panic` instead of `process::exit`, so sibling seeds are not killed mid-run.
+* Aggregate (and summary) treat `clark_evans` / `forage_radius` as undefined when the population is extinct or has fewer than two homes; `travel_per_food_run` is shared between summary and aggregate.
+* Stale `emergence_summary.csv` / `emergence_aggregate.csv` are removed at the start of a suite.
+* `branch` rejects a silent global `--config` (use `--config-b`).
+* Snapshot `relative_path` is stored with `/`, and reproduce joins / splits on both separators, so a Windows-written manifest still finds its snapshot on macOS.
+* Viewer: a no-op intervention (e.g. halving already-zero regrowth) refuses to branch.
+
+### A.22 SQLite run index and periodic state snapshots (A.10 "run storage")
+
+Phase 2 campaigns leave many manifests on disk. This entry makes them queryable and adds mid-run state saves without changing simulation results.
+
+| Decision | Rationale |
+|---|---|
+| **Bundled SQLite (`rusqlite` + `bundled`)** | Offline on macOS and Windows with no system library; DuckDB would be heavier for a simple upsert/query CLI. |
+| **`runs.sqlite` next to the outputs** | Same folder as the manifests; moving a results tree keeps the index with it. |
+| **Auto-upsert on manifest write** | Every `run` / `branch` / `experiments` / `sweep` path already goes through `run::drive`; failures to index warn and do not fail the run (the JSON manifest is the source of truth). In-process writers take a mutex (so `--jobs` cannot race). `indexed_at` is the final state hash (deterministic). |
+| **`runs_index.csv`** | Refreshed beside the DB after each upsert / rebuild / finalize. Ordered by seed, label, path — this is what identity checks compare. SQLite page bytes are still skipped (`runs.sqlite*`). |
+| **`finalize_dir` after suites** | `experiments` and `sweep` rebuild a fresh DB from all manifests and rewrite the CSV, so a parallel campaign cannot leave a partial index. |
+| **`accrete index rebuild` / `query` / `sql`** | Rebuild walks `*_manifest.json` recursively (depth 32) and drops rows whose files are gone. Query filters are ANDed CSV. SQL is read-only (`SELECT` / `WITH … SELECT` / safe `PRAGMA`). |
+| **Indexed columns** | Label, seed, ticks, hashes, config digest, a few knobs (`food_regrowth`, `agent_kind`, trade/trails), build provenance, and final metrics totals when the CSV exists. |
+| **`--save-every N`** | Writes `<label>_seed<S>_day<D>.snap.json` after each completed day with `day % N == 0` (not the start/load day) and lists them in the manifest. Distinct from `--snap-every` (PNG maps). A conflicting prior manifest for the same label/seed is refused *before* the loop so mid-run snaps are not clobbered. A shorter prior run is allowed only when its final metrics population is 0 (extinction); a completed shorter run vs a longer `--days` is refused. Corrupt manifests are refused rather than overwritten. |
+| **Read-only query/sql** | `index query` / `index sql` open the DB read-only and do not create a missing file. SQL allows `SELECT`, `WITH … SELECT`, and a short allowlist of non-mutating `PRAGMA`s; writers use a busy timeout for any cross-process use. |
+
+**Still deferred from A.10:** Parquet daily metrics, Sobol designs, surrogate models, sensitivity indices / PDPs.
+
