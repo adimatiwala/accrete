@@ -77,6 +77,7 @@ pub const SUMMARY_HEADER: &str = "seed,experiment,days,population_control,popula
          total_deaths_old_age_control,total_deaths_old_age_intervention,\
          total_home_moves_control,total_home_moves_intervention,\
          mean_lifespan_days_control,mean_lifespan_days_intervention,\
+         births_per_adult_day_control,births_per_adult_day_intervention,\
          pathology_oscillating_control,pathology_oscillating_intervention,\
          pathology_starved_beside_food_control,pathology_starved_beside_food_intervention,\
          state_hash_control,state_hash_intervention,diverged\n";
@@ -128,6 +129,27 @@ pub fn run_suite(base: &Config, a: ExperimentsArgs) {
         fail("--days must be at least 1");
     }
     let experiments = select(&a.only).unwrap_or_else(|e| fail(e));
+    // Check every experiment changes results before running anything, so a
+    // no-op is reported up front, not after minutes of runs.
+    let mut control_cfg = base.clone();
+    control_cfg.sim.check_invariants |= a.check;
+    for e in &experiments {
+        let mut cfg = control_cfg.clone();
+        (e.apply)(&mut cfg);
+        if !cfg.differs_in_results(&control_cfg) {
+            if e.name.starts_with("scarcity") && base.resources.food_regrowth == 0.0 {
+                fail(format!(
+                    "experiment {} scales food regrowth, but the base regrowth is 0",
+                    e.name
+                ));
+            }
+            fail(format!(
+                "experiment {} does not change results under this base config \
+                 (is the ablation already applied via --set / --config?)",
+                e.name
+            ));
+        }
+    }
     run::check_label("control").unwrap_or_else(|e| fail(e));
     for e in &experiments {
         run::check_label(e.label).unwrap_or_else(|err| fail(err));
@@ -149,8 +171,6 @@ pub fn run_suite(base: &Config, a: ExperimentsArgs) {
     let mut summary = String::from(SUMMARY_HEADER);
 
     for &seed in &a.seeds {
-        let mut control_cfg = base.clone();
-        control_cfg.sim.check_invariants |= a.check;
         let control = run::run(
             seed,
             &control_cfg,
@@ -169,13 +189,6 @@ pub fn run_suite(base: &Config, a: ExperimentsArgs) {
             let mut cfg = base.clone();
             (e.apply)(&mut cfg);
             cfg.sim.check_invariants |= a.check;
-            if !cfg.differs_in_results(&control_cfg) {
-                fail(format!(
-                    "experiment {} does not change results under this base config \
-                     (is the ablation already applied via --set / --config?)",
-                    e.name
-                ));
-            }
             let intervention = run::run(
                 seed,
                 &cfg,
@@ -229,6 +242,24 @@ fn sum_trades(sim: &Simulation) -> u32 {
     sim.metrics.iter().map(|m| m.trades).sum()
 }
 
+/// Births per adult-day over the run: per-capita fertility, separating a
+/// fall in births from simply having fewer adults.
+fn births_per_adult_day(sim: &Simulation) -> f64 {
+    let births: u64 = sim.metrics.iter().map(|m| u64::from(m.births)).sum();
+    let adult_days: u64 = sim.metrics.iter().map(|m| u64::from(m.adults)).sum();
+    births as f64 / adult_days.max(1) as f64
+}
+
+/// Mean lifespan of agents born during the run, or an empty cell when none
+/// of them has died yet (the metric reports 0 then, which is not a lifespan).
+fn lifespan_cell(m: &accrete_core::simulation::metrics::DailyMetrics) -> String {
+    if m.mean_lifespan_days > 0.0 {
+        m.mean_lifespan_days.to_string()
+    } else {
+        String::new()
+    }
+}
+
 /// Home moves over the whole run (the spec's "migration").
 fn sum_home_moves(sim: &Simulation) -> u32 {
     sim.metrics.iter().map(|m| m.home_moves).sum()
@@ -249,7 +280,7 @@ fn append_summary_row(
     );
     let _ = writeln!(
         s,
-        "{seed},{name},{days},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
+        "{seed},{name},{days},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}",
         mc.population,
         mi.population,
         i64::from(mi.population) - i64::from(mc.population),
@@ -275,8 +306,10 @@ fn append_summary_row(
         mi.total_deaths_old_age,
         sum_home_moves(control),
         sum_home_moves(intervention),
-        mc.mean_lifespan_days,
-        mi.mean_lifespan_days,
+        lifespan_cell(mc),
+        lifespan_cell(mi),
+        births_per_adult_day(control),
+        births_per_adult_day(intervention),
         mc.pathology_oscillating,
         mi.pathology_oscillating,
         mc.pathology_starved_beside_food,
@@ -294,15 +327,14 @@ mod tests {
 
     use accrete_core::config::TICKS_PER_DAY;
 
+    /// A fresh directory per call. The counter makes names unique even
+    /// when parallel tests ask at the same instant (macOS clocks only have
+    /// microsecond resolution, so a timestamp alone collided).
     fn tmp() -> PathBuf {
-        let p = std::env::temp_dir().join(format!(
-            "accrete-exp-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let p = std::env::temp_dir().join(format!("accrete-exp-{}-{n}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&p);
         std::fs::create_dir_all(&p).unwrap();
         p
     }
@@ -430,8 +462,9 @@ mod tests {
         }
     }
 
-    /// Lower regrowth leaves less standing food and fewer people within a
-    /// month, without changing anything agents are told.
+    /// Within a month, lower regrowth leaves less standing food and no more
+    /// people (later, the much smaller population can leave *more* standing
+    /// food; see accrete.md A.18).
     #[test]
     fn severe_scarcity_reduces_food_and_population() {
         let out = tmp();
@@ -468,6 +501,69 @@ mod tests {
         );
         assert_eq!(col("experiment"), "trade");
         assert_eq!(col("diverged"), "true");
+        let _ = std::fs::remove_dir_all(&out);
+    }
+
+    /// The whole suite end to end: the summary's totals match the per-day
+    /// metrics files each side wrote.
+    #[test]
+    fn suite_summary_matches_the_metrics_files() {
+        let out = tmp();
+        run_suite(
+            &Config::default(),
+            ExperimentsArgs {
+                seeds: vec![1],
+                days: 12,
+                out: out.clone(),
+                every: 0,
+                check: false,
+                only: vec!["scarcity20".into()],
+            },
+        );
+        let read = |name: &str| std::fs::read_to_string(out.join(name)).expect(name);
+        let summary = read("emergence_summary.csv");
+        let mut lines = summary.lines();
+        let header: Vec<&str> = lines.next().unwrap().split(',').collect();
+        let row: Vec<&str> = lines.next().unwrap().split(',').collect();
+        assert!(lines.next().is_none(), "one experiment, one seed, one row");
+        assert_eq!(row.len(), header.len());
+        let col = |name: &str| row[header.iter().position(|h| *h == name).expect(name)];
+        assert_eq!(col("experiment"), "scarcity20");
+        // Sum a column of a side's metrics CSV.
+        let total = |file: &str, column: &str| -> u64 {
+            let text = read(file);
+            let mut it = text.lines();
+            let h: Vec<&str> = it.next().unwrap().split(',').collect();
+            let k = h.iter().position(|x| *x == column).expect(column);
+            it.map(|l| l.split(',').nth(k).unwrap().parse::<u64>().unwrap())
+                .sum()
+        };
+        for (side, file) in [
+            ("control", "control_seed1_metrics.csv"),
+            ("intervention", "food-x0.2_seed1_metrics.csv"),
+        ] {
+            assert_eq!(
+                col(&format!("total_births_{side}")),
+                total(file, "births").to_string(),
+                "{side} births"
+            );
+            assert_eq!(
+                col(&format!("trades_{side}")),
+                total(file, "trades").to_string(),
+                "{side} trades"
+            );
+            assert_eq!(
+                col(&format!("total_home_moves_{side}")),
+                total(file, "home_moves").to_string(),
+                "{side} moves"
+            );
+            assert_eq!(
+                col(&format!("mean_lifespan_days_{side}")),
+                "",
+                "nobody born in 12 days has died"
+            );
+        }
+        assert!(out.join("control_vs_food-x0.2_seed1_compare.csv").exists());
         let _ = std::fs::remove_dir_all(&out);
     }
 }
