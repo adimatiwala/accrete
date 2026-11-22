@@ -1593,3 +1593,40 @@ New suite and sweep outcomes (`experiments::OUTCOMES`):
 5. **Population is unaffected** (food, not productivity, is what binds). Starvation deaths with tools but without trade (about 2 per run) have CIs that include 0 and are not claimed.
 
 **Why there are no specialists** (a hypothesis for the next experiment, not a fitted result): one batch makes about one tool, which lasts about 48 productive ticks, so each adult needs a new tool only every couple of weeks, and making it costs only a few ticks once materials are in hand. Self-supply is cheap relative to finding a seller among the few co-located agents. Specialisation should appear when **(a)** crafting has strong increasing returns (practice raising output well beyond aptitude) or **(b)** stone is scarce and localised, so that most agents cannot self-supply. Both are single-parameter interventions (`tools.practice_per_tick`, `skills.practice_max`, `resources.stone_threshold`) for the next sweep, and are the natural follow-up to H2.
+
+### A.27 Payoff-biased social learning (research program §7.2, H5)
+
+**Mechanism** (default off: `culture.enabled = false`). In the same meeting where two agents share food locations, each mentions its experienced foraging return. A listener whose partner does better moves each personality trait toward the partner's by
+
+```
+rate × min(1, (partner return − own return) / own return) × (0.5 + 0.5 × own sociability)
+```
+
+with `rate` = 0.05. Traits stay in [0, 1]. Genetic inheritance is unchanged. Learning is lifelong and local.
+
+**Decisions:**
+* **The payoff is what agents can actually tell each other:** the experienced return, already a local, per-agent quantity. No agent sees anyone's traits except a conversation partner's.
+* **No randomness.** With culture disabled, all 94 prior metric columns are bit-identical to the tools build over 120 days (seed 2). `SNAPSHOT_FORMAT` 6, because `DailyMetrics` gained the trait-mean and learning-count columns.
+
+**Tests:** in a two-agent scenario the worse forager's traits move toward the better forager's, the better forager does not change, and learning events are counted; nothing changes when culture is disabled.
+
+**E5 results** (`experiments --only culture --seed 1-5 --days 300`, random droughts on; paired differences, culture minus control, 95 % CI):
+
+| Outcome | Control | Culture | Difference |
+|---|---|---|---|
+| Moran's I, caution | 0.683 | 0.686 | +0.002 [−0.144, +0.149] |
+| Moran's I, sociability | 0.359 | 0.335 | −0.024 [−0.127, +0.079] |
+| Moran's I, curiosity | 0.570 | 0.601 | +0.030 [−0.054, +0.115] |
+| Moran's I, diligence | 0.550 | 0.650 | +0.099 [−0.156, +0.355] |
+| Mean caution | 0.457 | 0.478 | +0.022 [−0.031, +0.074] |
+| Hamlets (exploratory) | 2.2 | 3.0 | **+0.8 [+0.25, +1.36]**, higher on 4 of 5 seeds |
+| Population | 476 | 463 | −13 [−42, +16] |
+
+The learning dose is large: about 27,000 copying events per run, 0.27 per person-day.
+
+**Findings:**
+1. **H5 is not supported.** Despite heavy learning, trait geography does not rise above the kinship baseline (every Moran's I CI spans 0), and trait means do not shift.
+2. **Why: payoffs are not trait-driven.** An agent's foraging return depends mostly on *where* it lives (land and neighbours, A.25: regrowth dominates every outcome), not on its traits. Payoff-biased copying therefore copies luck, and the traits it spreads are close to selectively neutral. Cultural-evolution theory (Boyd & Richerson) predicts exactly this: payoff-biased transmission only builds adaptive culture when payoffs depend on the transmitted behaviour. The model's null is a correct reproduction of that requirement, not a failure.
+3. **An unexpected exploratory effect:** culture increased hamlets (+0.8, 4/4 seeds with a change, CI excluding 0) without changing clustering R or population. It was not the primary outcome, and it is recorded for replication (10 seeds, 600 days) before any claim. One candidate mechanism is that copying a better forager's caution and diligence makes households more stable.
+
+**Next:** make payoffs trait-sensitive, then repeat E5. For example, run under tools (diligence changes crafting output) or under droughts concentrated in one region (caution pays where food fails).
