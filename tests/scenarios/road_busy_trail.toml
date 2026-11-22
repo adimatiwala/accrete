@@ -1,0 +1,34 @@
+name = "busy-household-trail"
+description = "Busy worn trail used by the agent and its household: ImproveTrail is eventually chosen."
+map = """
+..........
+..........
+ttttt.....
+..........
+"""
+[[home]]
+at = [7, 0]
+
+[[agent]]
+at = [2, 2]
+home = 0
+hunger = 0.1
+food = 6.0
+wood = 2.0
+stone = 2.0
+traits = [0.5, 0.5, 0.9, 0.9]
+crossings = [[2, 2, 30.0]]
+
+[[agent]]
+at = [7, 0]
+home = 0
+hunger = 0.1
+food = 6.0
+crossings = [[2, 2, 40.0]]
+
+[[agent]]
+at = [7, 0]
+home = 0
+hunger = 0.1
+food = 6.0
+crossings = [[2, 2, 40.0]]

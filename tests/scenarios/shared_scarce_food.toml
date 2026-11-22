@@ -1,0 +1,18 @@
+name = "two-agents-little-food"
+description = "Two agents, one food tile with little food: split without duplication; neither waits forever."
+map = """
+.........
+.........
+.........
+"""
+[[food]]
+at = [4, 1]
+amount = 3.0
+
+[[agent]]
+at = [4, 1]
+hunger = 0.55
+
+[[agent]]
+at = [4, 1]
+hunger = 0.55

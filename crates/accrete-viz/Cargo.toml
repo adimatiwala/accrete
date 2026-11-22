@@ -1,0 +1,10 @@
+[package]
+name = "accrete-viz"
+description = "Shared overlay color mapping for the Accrete viewer and CLI renderer."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+accrete-core.workspace = true

@@ -1,0 +1,31 @@
+name: ci
+
+# Bit-identical results are required on macOS (Apple Silicon) and Windows.
+# The same golden hashes in tests/golden/ are checked on both.
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup show
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Clippy (bans non-deterministic float methods in accrete-core)
+        run: cargo clippy -p accrete-core -p accrete-cli -p accrete-viz --all-targets -- -D warnings
+      - name: Test (release)
+        run: cargo test --release -p accrete-core -p accrete-cli -p accrete-viz
+      - name: Test (debug; must match the same golden hashes)
+        run: cargo test -p accrete-core
+      - name: Build viewer
+        run: cargo build --release -p accrete-viewer
+      - name: Headless smoke run
+        run: cargo run --release -p accrete-cli -- run --seed 1 --days 30 --every 10 --check -o results

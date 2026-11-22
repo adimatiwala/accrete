@@ -1,0 +1,30 @@
+name = "low-reciprocity-partner"
+description = "A partner with a low reciprocity score is avoided in favour of a trusted one."
+map = """
+........
+........
+........
+"""
+[[home]]
+at = [3, 1]
+
+# Agent 0 wants wood (home without storage) and has food to offer.
+[[agent]]
+at = [3, 1]
+home = 0
+hunger = 0.1
+food = 24.0
+reciprocity = [[1, -0.8], [2, 0.8]]
+
+# Two identical wood holders next to it.
+[[agent]]
+at = [4, 1]
+hunger = 0.45
+wood = 12.0
+reciprocity = [[0, -0.8]]
+
+[[agent]]
+at = [2, 1]
+hunger = 0.45
+wood = 12.0
+reciprocity = [[0, 0.8]]

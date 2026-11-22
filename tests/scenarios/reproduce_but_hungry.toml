@@ -1,0 +1,20 @@
+name = "eligible-but-hungry"
+description = "Agent eligible to reproduce, but hungry: eats first."
+map = """
+........
+........
+........
+"""
+[[home]]
+at = [3, 1]
+chests = [80.0]
+
+[[food]]
+at = [5, 1]
+amount = 200.0
+
+[[agent]]
+at = [3, 1]
+home = 0
+hunger = 0.6
+food = 12.0

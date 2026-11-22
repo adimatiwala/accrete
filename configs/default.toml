@@ -1,0 +1,273 @@
+[world]
+width = 128
+height = 128
+ocean_fraction = 0.30000001192092896
+mountain_fraction = 0.07000000029802322
+hill_fraction = 0.1599999964237213
+forest_moisture = 0.5600000023841858
+elevation_scale = 56.0
+elevation_octaves = 6
+warp_strength = 9.0
+ridge_strength = 0.3499999940395355
+edge_falloff = 0.8999999761581421
+moisture_scale = 40.0
+moisture_octaves = 5
+coast_moisture = 0.11999999731779099
+coast_moisture_range = 6
+min_lake_tiles = 10
+min_island_tiles = 24
+smoothing_passes = 2
+river_threshold = 110.0
+river_epsilon = 0.000009999999747378752
+
+[resources]
+fertility_plains = 0.30000001192092896
+fertility_forest = 0.20000000298023224
+fertility_hills = 0.10000000149011612
+fertility_mountains = 0.0
+moisture_weight = 0.30000001192092896
+river_bonus = [
+    0.3499999940395355,
+    0.25,
+    0.15000000596046448,
+    0.05000000074505806,
+]
+min_food_fertility = 0.15000000596046448
+food_capacity_scale = 20.0
+patch_scale = 7.0
+patch_rich_above = 0.6499999761581421
+patch_poor_below = 0.3499999940395355
+patch_rich_factor = 1.5
+patch_poor_factor = 0.4000000059604645
+initial_food_fraction = 0.800000011920929
+food_regrowth = 0.15000000596046448
+forest_wood = 40.0
+plains_wood = 5.0
+plains_wood_min_moisture = 0.5
+wood_regrowth = 0.019999999552965164
+stone_scale = 9.0
+stone_threshold = 0.6000000238418579
+stone_min = 50
+stone_max = 200
+
+[sight]
+radius = 6
+relief_m = 1500.0
+eye_height_m = 15.0
+canopy_m = 15.0
+reobserve_ticks = 6
+
+[movement]
+mp_per_tick = 10
+plains_mp = 10
+forest_mp = 20
+hills_mp = 30
+mountains_mp = 60
+river_extra_mp = 20
+diagonal_num = 14
+min_mp = 5
+astar_max_expansions = 4000
+replan_ticks = 12
+
+[spawn]
+agents = 100
+min_spacing = 4
+food_radius = 4
+min_nearby_food = 60.0
+initial_known_radius = 8
+initial_food = 4.0
+initial_hunger_min = 0.05000000074505806
+initial_hunger_max = 0.30000001192092896
+
+[needs]
+hunger_per_day = 0.33000001311302185
+juvenile_hunger_factor = 0.5
+hunger_per_food = 0.16500000655651093
+max_meal = 4.0
+energy_per_active_tick = 0.05000000074505806
+rest_per_tick = 0.10000000149011612
+rest_per_tick_home = 0.125
+very_hungry = 0.699999988079071
+health_loss_deprived_per_day = 0.05000000074505806
+health_loss_starving_per_day = 0.15000000596046448
+health_recovery_per_day = 0.10000000149011612
+low_health = 0.30000001192092896
+
+[life]
+maturity_days = 40.0
+elder_days = 150.0
+age_decline_per_day = 0.012000000104308128
+frailty_per_deprived_day = 0.006000000052154064
+frailty_per_crowded_day = 0.0010000000474974513
+reproduce_cooldown_days = 30.0
+reproduce_health_margin = 0.10000000149011612
+reproduce_food_carried = 10.0
+reproduce_food_stored = 20.0
+reproduce_chance = 0.3499999940395355
+reproduce_retry_days = 1.0
+newborn_food = 6.0
+birth_energy_cost = 0.20000000298023224
+juvenile_gather_factor = 0.5
+juvenile_leash = 10
+trait_inherit_jitter = 0.10000000149011612
+population_cap = 1000
+
+[inventory]
+carry_adult = 30.0
+carry_juvenile = 15.0
+food_weight = 1.0
+wood_weight = 2.0
+stone_weight = 3.0
+carried_spoil_per_day = 0.019999999552965164
+stored_spoil_per_day = 0.004999999888241291
+chest_capacity = 200.0
+max_chests = 3
+storage_wood = 10.0
+storage_ticks = 6
+
+[memory]
+enabled = true
+food_slots = 40
+wood_slots = 16
+stone_slots = 8
+changed_slots = 32
+home_slots = 16
+freshness_half_life_days = 5.0
+min_amount = 1.0
+newborn_resource_share = 0.5
+newborn_known_radius = 16
+unreachable_cooldown_ticks = 48
+
+[skills]
+aptitude_min = 0.699999988079071
+aptitude_max = 1.2999999523162842
+practice_per_tick = 0.004999999888241291
+practice_max = 0.30000001192092896
+practice_decay_per_day = 0.0010000000474974513
+base_food = 2.0
+base_wood = 1.5
+base_stone = 1.0
+
+[homes]
+max_homes_per_tile = 8
+comfortable_capacity = 4
+crowding_grace_days = 7.0
+crowding_rest_penalty = 0.15000000596046448
+crowding_rest_penalty_max = 0.6000000238418579
+settle_after_days = 2.0
+site_radius = 5
+site_food_per_person = 5.0
+reconsider_ticks = 24
+
+[decision]
+time_cost = 0.019999999552965164
+eat_weight = 3.0
+eat_threshold_base = 0.4000000059604645
+eat_threshold_caution = 0.15000000596046448
+rest_weight = 2.5
+rest_threshold_base = 0.30000001192092896
+rest_threshold_diligence = 0.15000000596046448
+rest_threshold_caution = 0.10000000149011612
+rest_until = 0.949999988079071
+food_weight = 1.600000023841858
+reserve_days_base = 2.0
+reserve_days_caution = 4.0
+household_store_days = 6.0
+wood_weight = 0.800000011920929
+explore_weight = 0.6000000238418579
+explore_rays = 16
+explore_max_dist = 48
+explore_desperation = 1.2000000476837158
+home_pull = 0.5
+home_weight = 1.0
+social_weight = 0.3499999940395355
+kin_weight = 0.25
+crowding_weight = 0.6000000238418579
+move_home_margin = 0.3499999940395355
+storage_weight = 0.8999999761581421
+deposit_weight = 0.8999999761581421
+withdraw_weight = 1.2000000476837158
+reproduce_weight = 1.5
+reproduce_security_days = 6.0
+reproduce_security_weight = 2.0
+reproduce_land_weight = 3.0
+reproduce_return_weight = 3.0
+reproduce_min_return = 0.8500000238418579
+materials_weight = 0.800000011920929
+shelter_weight = 0.8999999761581421
+commitment = 0.15000000596046448
+jitter = 0.019999999552965164
+
+[pathology]
+oscillation_switches = 6
+oscillation_window_ticks = 24
+stuck_ticks = 12
+starved_reach_ticks = 48
+idle_ticks_per_day = 8
+
+[settlement]
+min_homes = 5
+min_residents = 15
+radius = 3
+persist_days = 60
+village_homes = 15
+village_residents = 50
+town_homes = 50
+town_residents = 150
+
+[trails]
+enabled = true
+decay = 0.949999988079071
+threshold = 20.0
+fade_days = 30
+
+[weather]
+random_droughts = true
+daily_chance = 0.006666666828095913
+radius_min = 6
+radius_max = 16
+length_min_days = 10
+length_max_days = 40
+severity_min = 0.30000001192092896
+severity_max = 0.699999988079071
+cooldown_days = 60
+scripted = []
+seasons_amplitude = 0.0
+season_length_days = 60
+
+[social]
+share_enabled = true
+share_interval_ticks = 6
+share_items_base = 1
+share_items_sociability = 2
+trade_enabled = true
+reciprocity_enabled = true
+trade_min_gain = 0.05000000074505806
+trade_ticks = 1.0
+reciprocity_step = 0.15000000596046448
+reciprocity_decay_per_day = 0.019999999552965164
+social_slots = 32
+food_value = 1.0
+material_value = 0.6000000238418579
+surplus_value = 0.05000000074505806
+
+[infrastructure]
+roads_enabled = true
+household_weight = 0.5
+road_wood = 2.0
+road_stone = 2.0
+road_ticks = 4
+road_condition = 180
+road_horizon_days = 30.0
+road_material_ticks = 6.0
+frequent_slots = 16
+shelters_enabled = true
+shelter_wood = 20.0
+shelter_stone = 10.0
+shelter_ticks = 12
+max_shelter = 2
+
+[sim]
+event_log_capacity = 20000
+check_invariants = false
+agent_kind = "normal"

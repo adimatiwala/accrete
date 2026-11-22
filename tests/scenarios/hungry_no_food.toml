@@ -1,0 +1,16 @@
+name = "hungry-no-known-food"
+description = "Hungry agent, no known food: explores instead of idling."
+map = """
+..............................
+..............................
+..............................
+..............................
+..............................
+"""
+[[food]]
+at = [28, 2]
+amount = 20.0
+
+[[agent]]
+at = [2, 2]
+hunger = 0.5
