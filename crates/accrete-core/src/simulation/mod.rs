@@ -1,5 +1,6 @@
 //! The simulation controller, events, metrics, and measurement.
 
+pub mod disruption;
 pub mod emergence;
 pub mod engine;
 pub mod events;

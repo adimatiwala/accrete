@@ -12,7 +12,7 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 
-use accrete_core::config::ScriptedDrought;
+use accrete_core::config::{DisruptionKind, ScriptedDisruption, ScriptedDrought};
 use accrete_core::simulation::metrics::DailyMetrics;
 use accrete_core::{Config, Simulation};
 
@@ -26,6 +26,7 @@ pub struct BranchArgs {
     pub config_b: Option<Config>,
     pub sets_b: Vec<String>,
     pub droughts_b: Vec<String>,
+    pub disruptions_b: Vec<String>,
     pub label_a: String,
     pub label_b: String,
 }
@@ -56,6 +57,56 @@ pub fn parse_drought(s: &str) -> Result<ScriptedDrought, String> {
         radius: u(4)?,
         severity,
     })
+}
+
+/// Parse `--disrupt DAY:DAYS:KIND:X:Y:RADIUS` or `DAY:DAYS:KIND:busiest:N`,
+/// where KIND is `block` or `slowF` (entering costs F times as much).
+pub fn parse_disruption(s: &str) -> Result<ScriptedDisruption, String> {
+    let p: Vec<&str> = s.split(':').map(str::trim).collect();
+    let err = || {
+        format!(
+            "--disrupt expects DAY:DAYS:block|slowF:X:Y:RADIUS or DAY:DAYS:block|slowF:busiest:N, got {s}"
+        )
+    };
+    let u = |x: &str| x.parse::<u32>().map_err(|_| err());
+    let (kind, slow_factor) = match p.get(2).copied() {
+        Some("block") => (DisruptionKind::Block, 3),
+        Some(k) if k.starts_with("slow") => {
+            let f: u8 = k[4..].parse().map_err(|_| err())?;
+            if f < 2 {
+                return Err(format!("--disrupt slow factor must be at least 2, got {f}"));
+            }
+            (DisruptionKind::Slow, f)
+        }
+        _ => return Err(err()),
+    };
+    let mut d = ScriptedDisruption {
+        start_day: u(p.first().copied().ok_or_else(err)?)?,
+        days: u(p.get(1).copied().ok_or_else(err)?)?,
+        kind,
+        slow_factor,
+        center: [0, 0],
+        radius: 0,
+        busiest_tiles: 0,
+    };
+    match p.len() {
+        5 if p[3] == "busiest" => d.busiest_tiles = u(p[4])?,
+        6 => {
+            d.center = [
+                p[3].parse().map_err(|_| err())?,
+                p[4].parse().map_err(|_| err())?,
+            ];
+            d.radius = u(p[5])?;
+        }
+        _ => return Err(err()),
+    }
+    if d.days == 0 {
+        return Err("--disrupt DAYS must be at least 1".into());
+    }
+    if p[3] == "busiest" && d.busiest_tiles == 0 {
+        return Err("--disrupt busiest:N needs N of at least 1".into());
+    }
+    Ok(d)
 }
 
 pub fn branch(a: BranchArgs) {
@@ -103,6 +154,26 @@ pub fn branch(a: BranchArgs) {
             );
         }
         cfg.weather.scripted.push(d);
+    }
+    for d in &a.disruptions_b {
+        let d = parse_disruption(d).unwrap_or_else(|e| {
+            eprintln!("error: {e}");
+            std::process::exit(2)
+        });
+        if d.start_day < start_day {
+            eprintln!(
+                "error: disruption starts on day {} but the snapshot is at day {start_day}",
+                d.start_day
+            );
+            std::process::exit(2);
+        }
+        if d.start_day >= end_day {
+            eprintln!(
+                "warning: disruption starts on day {} but the branches stop on day {end_day}; it will not happen",
+                d.start_day
+            );
+        }
+        cfg.disruption.scripted.push(d);
     }
     if !cfg.differs_in_results(&control.config) {
         eprintln!(
@@ -175,6 +246,9 @@ const COLUMNS: &[Col] = &[
     ("forage_radius", |m| f64::from(m.forage_radius)),
     ("trades", |m| f64::from(m.trades)),
     ("drought_area", |m| f64::from(m.drought_area)),
+    ("disrupted_tiles", |m| f64::from(m.disrupted_tiles)),
+    ("tiles_moved", |m| m.tiles_moved as f64),
+    ("route_failures", |m| f64::from(m.route_failures)),
 ];
 
 /// One row per day after the branch point: for each metric, the control
@@ -278,5 +352,27 @@ mod tests {
     #[test]
     fn zero_day_droughts_are_rejected() {
         assert!(parse_drought("100:0:64:60:20:0.6").is_err());
+    }
+
+    #[test]
+    fn disruption_spec_parses_and_validates() {
+        let d = parse_disruption("60:15:block:busiest:12").unwrap();
+        assert_eq!((d.start_day, d.days, d.busiest_tiles), (60, 15, 12));
+        assert_eq!(d.kind, DisruptionKind::Block);
+        let d = parse_disruption("60:15:slow4:64:50:3").unwrap();
+        assert_eq!(
+            (d.kind, d.slow_factor, d.center, d.radius),
+            (DisruptionKind::Slow, 4, [64, 50], 3)
+        );
+        for bad in [
+            "60:15:flood:busiest:3",
+            "60:15:slow1:1:1:1",
+            "60:15:block:1:1",
+            "x:15:block:busiest:3",
+            "60:0:block:busiest:3",
+            "60:15:block:busiest:0",
+        ] {
+            assert!(parse_disruption(bad).is_err(), "{bad}");
+        }
     }
 }

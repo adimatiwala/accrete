@@ -7,6 +7,8 @@
 //! accrete run --load results/seed1_day100.snap.json --days 200
 //! accrete branch --load results/seed1_day100.snap.json --days 200 \
 //!     --drought 100:200:64:64:20:0.6 --label-b drought
+//! accrete branch --load results/seed1_day100.snap.json --days 60 \\
+//!     --disrupt 100:20:block:busiest:12 --label-b cut
 //! ```
 
 mod branch;
@@ -102,6 +104,11 @@ enum Cmd {
         /// `DAY:DAYS:X:Y:RADIUS:SEVERITY` (repeatable).
         #[arg(long = "drought")]
         droughts: Vec<String>,
+        /// Route disruption for the intervention:
+        /// `DAY:DAYS:block|slowF:X:Y:RADIUS` or `DAY:DAYS:block|slowF:busiest:N`
+        /// (repeatable).
+        #[arg(long = "disrupt")]
+        disruptions: Vec<String>,
         /// Config overrides for the intervention (repeatable).
         #[arg(long = "set")]
         sets: Vec<String>,
@@ -263,6 +270,7 @@ fn main() {
             out,
             every,
             droughts,
+            disruptions,
             sets,
             config_b,
             label_a,
@@ -276,6 +284,7 @@ fn main() {
                 config_b: config_b.as_ref().map(|p| load_config(&Some(p.clone()))),
                 sets_b: sets,
                 droughts_b: droughts,
+                disruptions_b: disruptions,
                 label_a,
                 label_b,
             });

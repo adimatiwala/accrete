@@ -36,6 +36,7 @@ use crate::config::{Config, TickRates};
 use crate::hash;
 use crate::rng::Rng;
 use crate::simulation::Simulation;
+use crate::simulation::disruption::DisruptionState;
 use crate::simulation::events::{DeathRecord, EventLog, Ledger};
 use crate::simulation::metrics::{DailyMetrics, DayCounters};
 use crate::simulation::settlement::SettlementTracker;
@@ -44,7 +45,7 @@ use crate::world::World;
 
 /// Snapshot format version. Bump it whenever the serialized layout or the
 /// meaning of a saved field changes; older files are then rejected.
-pub const SNAPSHOT_FORMAT: u32 = 1;
+pub const SNAPSHOT_FORMAT: u32 = 2;
 
 /// Everything needed to resume a simulation exactly.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -69,6 +70,7 @@ pub struct Snapshot {
     pub rng_conflicts: Rng,
     pub rng_weather: Rng,
     pub weather: WeatherState,
+    pub disruptions: DisruptionState,
     pub ledger: Ledger,
     pub settlements: SettlementTracker,
     pub today: DayCounters,
@@ -99,6 +101,7 @@ impl Simulation {
             rng_conflicts: self.rng_conflicts.clone(),
             rng_weather: self.rng_weather.clone(),
             weather: self.weather.clone(),
+            disruptions: self.disruptions.clone(),
             ledger: self.ledger.clone(),
             settlements: self.settlements.clone(),
             today: self.today.clone(),
@@ -133,6 +136,8 @@ impl Simulation {
         sim.rng_conflicts = s.rng_conflicts;
         sim.rng_weather = s.rng_weather;
         sim.weather = s.weather;
+        s.disruptions.rebuild_index(&mut sim.world);
+        sim.disruptions = s.disruptions;
         sim.ledger = s.ledger;
         sim.settlements = s.settlements;
         sim.today = s.today;
@@ -241,6 +246,7 @@ impl Simulation {
         }
         self.rates = TickRates::new(&config);
         self.world.rebuild_derived(&config);
+        self.disruptions.rebuild_index(&mut self.world);
         self.events = EventLog::new(config.sim.event_log_capacity);
         self.config = config;
         Ok(())

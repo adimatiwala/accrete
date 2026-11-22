@@ -318,6 +318,11 @@ pub fn frame(sim: &Simulation, overlay: Overlay, scale: u32) -> Canvas {
     for d in &sim.weather.active {
         img.circle(d.center, d.radius as f32, [255, 140, 0]);
     }
+    for d in &sim.disruptions.active {
+        for &t in &d.tiles {
+            img.dot(sim.world.dims.pos(t), [230, 30, 30], scale);
+        }
+    }
     for s in sim.settlements.tracked.iter() {
         let c = match s.class {
             accrete_core::simulation::settlement::SizeClass::Candidate => [180, 180, 255],

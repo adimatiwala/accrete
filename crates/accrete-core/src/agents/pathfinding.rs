@@ -92,7 +92,10 @@ impl Belief for AgentBelief<'_> {
     #[inline]
     fn cost(&self, world: &World, p: Pos, c: &MovementConfig) -> Option<u32> {
         let t = world.tile(p);
-        cost_for(t.biome, t.is_river, self.0.believed_path(p), c)
+        crate::world::movement::with_disruption(
+            cost_for(t.biome, t.is_river, self.0.believed_path(p), c),
+            self.0.believed_disruption(p),
+        )
     }
 }
 
@@ -106,8 +109,7 @@ impl Belief for Omniscient {
     }
     #[inline]
     fn cost(&self, world: &World, p: Pos, c: &MovementConfig) -> Option<u32> {
-        let t = world.tile(p);
-        cost_for(t.biome, t.is_river, t.path_level, c)
+        world.enter_cost(p, c)
     }
 }
 

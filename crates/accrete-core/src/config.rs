@@ -34,6 +34,7 @@ pub struct Config {
     pub weather: WeatherConfig,
     pub social: SocialConfig,
     pub infrastructure: InfrastructureConfig,
+    pub disruption: DisruptionConfig,
     pub sim: SimConfig,
 }
 
@@ -659,6 +660,52 @@ impl Default for PathologyConfig {
             idle_ticks_per_day: 8,
         }
     }
+}
+
+/// Route disruptions (accrete.md, Week 4 Day 2): tiles made impassable or
+/// slow for a while by an experiment, applied through ordinary movement
+/// costs. Agents are never told; they find out by seeing the tiles.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DisruptionConfig {
+    pub scripted: Vec<ScriptedDisruption>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum DisruptionKind {
+    /// Tiles become impassable.
+    #[default]
+    Block,
+    /// Entering tiles costs `slow_factor` times the normal movement points.
+    Slow,
+}
+
+/// One scheduled route disruption. It affects either the land tiles within
+/// `radius` of `center`, or, when `busiest_tiles > 0`, that many of the most
+/// travelled land tiles without homes on them (highest decayed traffic, so
+/// trails and roads first) on `start_day`. Choosing tiles by traffic is the
+/// experiment's world-level choice, not any agent's. A `center`/`radius`
+/// area covers every land tile in it, homes included (a local flood).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScriptedDisruption {
+    pub start_day: u32,
+    pub days: u32,
+    #[serde(default)]
+    pub kind: DisruptionKind,
+    #[serde(default = "default_slow_factor")]
+    pub slow_factor: u8,
+    #[serde(default)]
+    pub center: [i32; 2],
+    #[serde(default)]
+    pub radius: u32,
+    #[serde(default)]
+    pub busiest_tiles: u32,
+}
+
+fn default_slow_factor() -> u8 {
+    3
 }
 
 /// A drought scheduled by an experiment (applied through ordinary regrowth).

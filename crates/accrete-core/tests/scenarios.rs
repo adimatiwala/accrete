@@ -336,3 +336,47 @@ fn selfish_agent_with_few_crossings_does_not_build() {
         accrete_core::world::PathLevel::Road
     );
 }
+
+#[test]
+fn blocked_gap_is_noticed_and_avoided() {
+    use accrete_core::config::{DisruptionKind, ScriptedDisruption};
+    use accrete_core::world::Disruption;
+    let mut sim = load("blocked_route.toml");
+    let gap = accrete_core::Pos::new(5, 3);
+    // Block the near gap after the agent's first observation, so it starts
+    // out believing the gap is open.
+    let block = ScriptedDisruption {
+        start_day: 0,
+        days: 30,
+        kind: DisruptionKind::Block,
+        slow_factor: 3,
+        center: [5, 3],
+        radius: 0,
+        busiest_tiles: 0,
+    };
+    sim.disruptions.update(0, &mut sim.world, &[block]);
+    assert_eq!(sim.world.disruption(gap), Disruption::Blocked);
+    assert_eq!(
+        sim.agents[0].memory.believed_disruption(gap),
+        Disruption::None
+    );
+
+    let mut reached = false;
+    for _ in 0..48 {
+        sim.step();
+        assert_ne!(sim.agents[0].pos, gap, "walked onto a blocked tile");
+        if sim.agents[0].stats.food_gathered > 0.0 {
+            reached = true;
+            break;
+        }
+    }
+    assert_eq!(
+        sim.agents[0].memory.believed_disruption(gap),
+        Disruption::Blocked,
+        "the agent learned the gap is blocked"
+    );
+    assert!(
+        reached,
+        "the agent did not reach the food through the other gap"
+    );
+}

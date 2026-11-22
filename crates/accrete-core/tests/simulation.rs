@@ -193,6 +193,117 @@ fn branches_from_one_snapshot_diverge_only_by_the_intervention() {
     );
 }
 
+/// Week 4 Day 2: a route disruption on the busiest trails acts only through
+/// movement costs. Nobody ever stands on a blocked tile, the tiles are
+/// restored when it ends, conservation holds every tick, and random droughts
+/// (the `weather` stream) are the same as in the undisrupted control.
+#[test]
+fn route_disruption_blocks_busy_trails_then_restores_them() {
+    use accrete_core::config::{DisruptionKind, ScriptedDisruption};
+    use accrete_core::world::Disruption;
+    let mut c = checked();
+    c.sim.check_invariants = false; // checked explicitly below, once per day
+    let mut base = Simulation::new(common::PRIMARY_SEED, c.clone());
+    base.run(60 * TICKS_PER_DAY);
+    let snap = base.snapshot_json();
+    let mut control = Simulation::from_snapshot_json(&snap).expect("control");
+    let mut cut = Simulation::from_snapshot_json(&snap).expect("disrupted");
+    let mut cfg = c;
+    cfg.disruption.scripted.push(ScriptedDisruption {
+        start_day: 60,
+        days: 15,
+        kind: DisruptionKind::Block,
+        slow_factor: 3,
+        center: [0, 0],
+        radius: 0,
+        busiest_tiles: 12,
+    });
+    cut.set_config(cfg)
+        .expect("disruption config is a valid intervention");
+
+    // Agents standing on a tile when it floods may leave it; nobody may step
+    // onto a blocked tile.
+    let mut saw_blocked = 0;
+    let mut caught = std::collections::BTreeMap::new();
+    for _ in 0..(20 * TICKS_PER_DAY) {
+        let before: std::collections::BTreeMap<u32, accrete_core::Pos> =
+            cut.agents.iter().map(|a| (a.id, a.pos)).collect();
+        cut.step();
+        control.step();
+        for a in &cut.agents {
+            if cut.world.disruption(a.pos) != Disruption::Blocked {
+                continue;
+            }
+            match before.get(&a.id) {
+                Some(&p) if p == a.pos => *caught.entry(a.id).or_insert(0u64) += 1,
+                _ => panic!("agent {} stepped onto blocked tile {:?}", a.id, a.pos),
+            }
+        }
+        if cut.tick % TICKS_PER_DAY == 0 {
+            cut.check_invariants().expect("invariants");
+        }
+        saw_blocked = saw_blocked.max(cut.metrics.last().map_or(0, |m| m.disrupted_tiles));
+    }
+    assert!(saw_blocked > 0, "no tiles were disrupted");
+    for (id, ticks) in &caught {
+        assert!(
+            *ticks < 3 * TICKS_PER_DAY,
+            "agent {id} stayed on a blocked tile for {ticks} ticks"
+        );
+    }
+    println!(
+        "  {} tiles disrupted; {} agents caught on them when they flooded",
+        saw_blocked,
+        caught.len()
+    );
+    assert_eq!(cut.disruptions.history.len(), 1);
+    assert!(cut.disruptions.active.is_empty(), "the disruption ended");
+    assert_eq!(
+        cut.metrics.last().unwrap().disrupted_tiles,
+        0,
+        "tiles restored"
+    );
+    let kinds: Vec<_> = cut.events.events.iter().map(|e| &e.kind).collect();
+    assert!(
+        kinds
+            .iter()
+            .any(|k| matches!(k, EventKind::RouteDisrupted { .. }))
+    );
+    assert!(
+        kinds
+            .iter()
+            .any(|k| matches!(k, EventKind::RouteRestored { .. }))
+    );
+    assert!(
+        cut.agents.iter().any(|a| a
+            .memory
+            .changed
+            .iter()
+            .any(|t| t.disruption == Disruption::Blocked))
+            || cut.agents.iter().all(|a| a
+                .memory
+                .changed
+                .iter()
+                .all(|t| t.disruption == Disruption::None)),
+        "memories are consistent"
+    );
+    let random = |s: &Simulation| {
+        s.weather
+            .history
+            .iter()
+            .filter(|d| !d.scripted)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(random(&control), random(&cut), "random droughts unaffected");
+    assert_eq!(control.rng_weather, cut.rng_weather);
+    assert_ne!(
+        control.state_hash(),
+        cut.state_hash(),
+        "the disruption had an effect"
+    );
+}
+
 /// Conservation, bounds, homes and chests are checked every tick by the
 /// engine itself when `check_invariants` is on; it panics on violation.
 #[test]

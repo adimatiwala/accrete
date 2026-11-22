@@ -898,7 +898,7 @@ Paste the following into Codex once the repository is open:
 
 This appendix records what was built from this specification, in the order it was built. It also records every place where the specification left a choice open (or was found not to work as written), what was chosen, and why. The base is commit `e5a15ce` (this document and a README only). All numbers below are defaults in `configs/default.toml`, which a test keeps identical to `Config::default()`.
 
-**Status against the plan:** Week 1 complete. Week 2 complete. Week 3 complete except for the Day 5 experiment suite. Week 4: droughts (random and scripted), the metrics export, snapshots and branching, the random and omniscient baselines, and the behavioural benchmarks are complete. Not yet built: route disruption.
+**Status against the plan:** Week 1 complete. Week 2 complete. Week 3 complete except for the Day 5 experiment suite. Week 4: droughts (random and scripted), the metrics export, snapshots and branching, route disruptions, the random and omniscient baselines, and the behavioural benchmarks are complete. Not yet built: the viewer's experiment controls, and the Week 3 Day 5 experiment suite.
 
 ### A.1 Repository and tooling
 
@@ -1063,8 +1063,6 @@ These point to the next experiments: longer trips (more scarcity), and goods tha
 
 ### A.10 Not yet implemented, and suggested next steps
 
-* **Week 4 items:**
-  * Route disruption.
 * **Run storage:** each run should keep a manifest (seed, full config, commit, `Cargo.lock` hash), which reproduces it exactly given determinism, plus the daily metrics (CSV now, Parquet later), periodic snapshots, and a SQLite or DuckDB index of runs.
 * **Parameter → behaviour mapping:**
   * a Latin-hypercube or Sobol design over parameters, with about 10 seeds per point;
@@ -1201,3 +1199,28 @@ Normal agents are far better than random, so the decision logic works. Limited s
   * A malformed ranges file names the key at fault.
   * The observed baseline ratios are recorded next to their limits.
 * **New tests:** the home pool on shared tiles; deterministic, pool-respecting omniscient observation; the cooldown skip; omniscient travel estimates using true roads; omniscient runs staying on land and round-tripping through snapshots; and the random baseline being deterministic with Idle last.
+
+### A.15 Route disruptions (Week 4 Day 2)
+
+| Decision | Rationale |
+|---|---|
+| **Effects:** `Blocked` (impassable) or `Slowed { factor }` (entering costs `factor` times the movement points) | The spec's "temporarily impassable or expensive path tiles". Integer factors keep movement exactly reproducible. |
+| **Scheduled in `[[disruption.scripted]]`**, started and ended in the daily phase | The same pattern as scripted droughts. A disruption covers either the land tiles in a `center`/`radius` area, or the `busiest_tiles` most-travelled land tiles **without homes** on the start day. |
+| **Busiest tiles exclude homes** | The first version picked home tiles, which carry the most traffic, so it flooded villages instead of cutting routes, and one agent stayed on its blocked home tile for the whole disruption. A route failure should hit paths. An explicit area still covers everything in it, homes included (a local flood). |
+| **State outside `Tile`** | `Simulation::disruptions` is authoritative, hashed and saved in snapshots (`SNAPSHOT_FORMAT` 2). `World::disruption_at` is a derived index. Keeping it out of `Tile` leaves the world-generation hash unchanged. |
+| **Agents are never told** | Agents plan with what they believe. The changed-tile memory now records a seen disruption; a planned step that turns out to be blocked is also recorded; and the agent re-plans. A restored tile looks normal when next seen. Agents caught on a tile when it floods can leave it, but nobody can enter a blocked tile. |
+| **CLI:** `branch --disrupt DAY:DAYS:block\|slowF:X:Y:RADIUS` or `…:busiest:N` | Comparison CSVs gain `disrupted_tiles`, `tiles_moved` and `route_failures`, and the map frames draw disrupted tiles. A daily `disrupted_tiles` metric is added. |
+
+**Golden hashes were re-recorded with no behaviour change.** The new `[disruption]` config section changes the config digest, and changed-tile memory hashes the new field. A 300-day run of seed 1 against the previous build produced identical metrics on every day, apart from the new all-zero `disrupted_tiles` column, and an identical death log.
+
+**Tests:**
+* **Unit:** cost rules, area and busiest-tile selection (busiest first, homes skipped), overlapping effects keep the worst, and the index clears when a disruption ends.
+* **Scenario `blocked_route`:** an agent that planned through a gap notices the block once the gap is in sight, never steps on it, and reaches the food through the other gap.
+* **Whole world:** blocking the 12 busiest tiles from day 60 for 15 days on seed 1. Nobody steps onto a blocked tile, the 4 agents caught on them leave within hours, invariants hold, the tiles are restored afterwards, and random droughts match the control.
+
+**First result** (seed 1, the 20 busiest non-home tiles blocked from day 100 for 20 days): failed route plans rose from 6 to 87 and walking rose by 5 % during the disruption, while population barely changed (339 against 341 at day 140). The road network is still thin by then, so there are many alternative routes. One seed, not yet a finding.
+
+**Rebased onto the reviewed snapshot and baseline PRs:**
+* **Golden snapshot bytes re-recorded.** `snapshot_seed1_t100` was re-recorded for `SNAPSHOT_FORMAT` 2. The state hashes were unchanged by the rebase.
+* **`--disrupt` checks match `--drought`.** A zero-day disruption and `busiest:0` are rejected; `busiest:0` would otherwise have become a radius-0 disruption at tile (0, 0). A disruption starting after the branches end gets a warning. A disruption-only intervention is detected with `Config::differs_in_results`, like every other intervention.
+* **Checked `set_config`.** The whole-world disruption test now fails if `set_config` rejects its config, instead of ignoring the `Result`.

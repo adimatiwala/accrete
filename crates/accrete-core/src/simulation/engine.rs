@@ -35,6 +35,7 @@ use crate::geom::{Pos, is_diagonal};
 use crate::hash::{StableHash, StableHasher};
 use crate::inventory::{Inventory, Resource};
 use crate::rng::{Rng, Stream};
+use crate::simulation::disruption::DisruptionState;
 use crate::simulation::emergence;
 use crate::simulation::events::{
     DeathCause, DeathRecord, EventKind, EventLog, Ledger, PathologyKind,
@@ -42,7 +43,7 @@ use crate::simulation::events::{
 use crate::simulation::metrics::{DailyMetrics, DayCounters};
 use crate::simulation::settlement::{SettlementTracker, SizeClass};
 use crate::simulation::weather::WeatherState;
-use crate::world::movement::{enter_cost, step_cost};
+use crate::world::movement::step_cost;
 use crate::world::{Home, HomeId, Pile, World, generate_world, resources};
 
 /// What an agent does this tick.
@@ -91,6 +92,9 @@ pub struct Simulation {
     /// (debugging; use `intent_of`).
     pub intents: Vec<(u32, Intent)>,
     pub weather: WeatherState,
+    /// Route disruptions in progress and past (authoritative; the world keeps
+    /// a derived per-tile index).
+    pub disruptions: DisruptionState,
     pub(crate) scratch: PathScratch,
     pub(crate) total_births: u32,
     pub(crate) total_deaths: [u32; 2],
@@ -153,6 +157,7 @@ impl Simulation {
             intents: Vec::new(),
             scratch: PathScratch::default(),
             weather: WeatherState::default(),
+            disruptions: DisruptionState::default(),
             total_births: 0,
             total_deaths: [0; 2],
             lifespans: (0.0, 0),
@@ -566,7 +571,7 @@ impl Simulation {
             let next_ok = r
                 .remaining()
                 .first()
-                .is_some_and(|&p| enter_cost(self.world.tile(p), mc).is_some());
+                .is_some_and(|&p| self.world.enter_cost(p, mc).is_some());
             // A stale but valid route is re-planned: the agent may know a better way now.
             if r.target == target && !r.done() && next_ok && fresh {
                 return true;
@@ -1207,8 +1212,16 @@ impl Simulation {
                 let mut moved_any = false;
                 if let Some(route) = a.route.as_mut() {
                     while let Some(&next) = route.remaining().first() {
-                        let Some(cost) = enter_cost(world.tile(next), &c.movement) else {
-                            // Blocked: drop the route; it will be re-planned.
+                        let Some(cost) = world.enter_cost(next, &c.movement) else {
+                            // Blocked (e.g. a route disruption the agent had
+                            // not seen): it now knows, and re-plans.
+                            a.memory.note_changed(
+                                next,
+                                world.tile(next).path_level,
+                                world.disruption(next),
+                                tick,
+                                c.memory.changed_slots as usize,
+                            );
                             a.route = None;
                             break;
                         };
@@ -1577,6 +1590,40 @@ impl Simulation {
             self.events
                 .push(tick, None, d.center, EventKind::DroughtEnded);
         }
+        // Route disruptions start and end through ordinary movement costs.
+        let (started, ended) =
+            self.disruptions
+                .update(day, &mut self.world, &c.disruption.scripted);
+        for d in started {
+            let pos = d
+                .tiles
+                .first()
+                .map_or(Pos::default(), |&t| self.world.dims.pos(t));
+            self.events.push(
+                tick,
+                None,
+                pos,
+                EventKind::RouteDisrupted {
+                    tiles: d.tiles.len() as u32,
+                    days: d.end_day - d.start_day,
+                    effect: d.effect,
+                },
+            );
+        }
+        for d in ended {
+            let pos = d
+                .tiles
+                .first()
+                .map_or(Pos::default(), |&t| self.world.dims.pos(t));
+            self.events.push(
+                tick,
+                None,
+                pos,
+                EventKind::RouteRestored {
+                    tiles: d.tiles.len() as u32,
+                },
+            );
+        }
         let factors = self.weather.regrowth_factors(&self.world, day, &c.weather);
         let (food, wood) = resources::regrow(&mut self.world, &c.resources, |i| factors[i]);
         self.ledger.regrown[0] += food;
@@ -1820,6 +1867,7 @@ impl Simulation {
             .filter(|&p| self.world.tile(p).is_land() && self.weather.in_drought(p))
             .count();
         m.drought_area = in_drought as f32 / land as f32;
+        m.disrupted_tiles = DisruptionState::disrupted_tiles(&self.world);
         m.trail_tiles = self
             .world
             .tiles
@@ -1870,6 +1918,7 @@ impl Simulation {
         self.rng_conflicts.stable_hash(&mut h);
         self.rng_weather.stable_hash(&mut h);
         self.weather.stable_hash(&mut h);
+        self.disruptions.stable_hash(&mut h);
         h.finish()
     }
 
@@ -1987,7 +2036,8 @@ pub fn observe(a: &mut Agent, world: &World, c: &Config, r: &TickRates, tick: u6
                 home_slots,
             );
         }
-        a.memory.note_changed(p, t.path_level, tick, changed_slots);
+        a.memory
+            .note_changed(p, t.path_level, world.disruption(p), tick, changed_slots);
     }
     if !mem_cfg.enabled {
         a.memory.forget_resources_not_in(|p| seen.contains(&p));

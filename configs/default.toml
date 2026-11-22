@@ -267,6 +267,9 @@ shelter_stone = 10.0
 shelter_ticks = 12
 max_shelter = 2
 
+[disruption]
+scripted = []
+
 [sim]
 event_log_capacity = 20000
 check_invariants = false

@@ -15,7 +15,7 @@ use crate::config::MemoryConfig;
 use crate::geom::{Dims, Pos};
 use crate::hash::{StableHash, StableHasher};
 use crate::inventory::Resource;
-use crate::world::{HomeId, PathLevel};
+use crate::world::{Disruption, HomeId, PathLevel};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ResourceMemory {
@@ -53,6 +53,9 @@ pub struct HomeSighting {
 pub struct ChangedTile {
     pub pos: Pos,
     pub path_level: PathLevel,
+    /// A route disruption seen on the tile (flood, landslide), if any.
+    #[serde(default)]
+    pub disruption: Disruption,
     pub seen_tick: u64,
 }
 
@@ -540,22 +543,34 @@ impl AgentMemory {
         self.homes.retain(|h| h.home != home);
     }
 
-    pub fn note_changed(&mut self, pos: Pos, level: PathLevel, tick: u64, cap: usize) {
+    /// Record what the agent sees of a tile's path level and disruption. A
+    /// tile that looks normal again (no path, no disruption) is forgotten.
+    pub fn note_changed(
+        &mut self,
+        pos: Pos,
+        level: PathLevel,
+        disruption: Disruption,
+        tick: u64,
+        cap: usize,
+    ) {
+        let normal = level == PathLevel::None && disruption == Disruption::None;
         if let Some(i) = self.changed.iter().position(|c| c.pos == pos) {
-            if level == PathLevel::None {
+            if normal {
                 self.changed.remove(i);
             } else {
                 self.changed[i].path_level = level;
+                self.changed[i].disruption = disruption;
                 self.changed[i].seen_tick = tick;
             }
             return;
         }
-        if level == PathLevel::None || cap == 0 {
+        if normal || cap == 0 {
             return;
         }
         let e = ChangedTile {
             pos,
             path_level: level,
+            disruption,
             seen_tick: tick,
         };
         if self.changed.len() < cap {
@@ -580,6 +595,14 @@ impl AgentMemory {
             .iter()
             .find(|c| c.pos == p)
             .map_or(PathLevel::None, |c| c.path_level)
+    }
+
+    /// The route disruption the agent last saw on `p`.
+    pub fn believed_disruption(&self, p: Pos) -> Disruption {
+        self.changed
+            .iter()
+            .find(|c| c.pos == p)
+            .map_or(Disruption::None, |c| c.disruption)
     }
 
     pub fn mark_unreachable(&mut self, p: Pos, until: u64) {
@@ -681,6 +704,7 @@ impl StableHash for AgentMemory {
         for c in &self.changed {
             c.pos.stable_hash(h);
             h.u8(c.path_level as u8);
+            h.u8(c.disruption.code());
             h.u64(c.seen_tick);
         }
         h.f32(self.home_food_seen);
