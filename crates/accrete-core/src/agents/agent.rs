@@ -267,7 +267,7 @@ pub struct Agent {
     /// Derived memo of believed line costs (A.31). Not state: never
     /// serialized or hashed.
     #[serde(skip)]
-    pub line_memo: std::cell::RefCell<crate::agents::pathfinding::LineMemo>,
+    pub line_memo: crate::agents::pathfinding::MemoCell,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]

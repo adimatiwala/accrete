@@ -95,6 +95,9 @@ pub struct Simulation {
     /// Latest intent per agent as `(agent id, intent)`, sorted by id
     /// (debugging; use `intent_of`).
     pub intents: Vec<(u32, Intent)>,
+    /// Worker threads for scoring proposals (A.32). Results do not depend on
+    /// it; it is not state and is never saved or hashed.
+    pub threads: usize,
     pub weather: WeatherState,
     /// Route disruptions in progress and past (authoritative; the world keeps
     /// a derived per-tile index).
@@ -161,6 +164,7 @@ impl Simulation {
             traces: BTreeMap::new(),
             intents: Vec::new(),
             scratch: PathScratch::default(),
+            threads: crate::simulation::parallel::default_threads(),
             weather: WeatherState::default(),
             disruptions: DisruptionState::default(),
             total_births: 0,
@@ -346,11 +350,14 @@ impl Simulation {
             }
         }
 
-        // 3. Propose.
+        // 3. Propose: score every agent's options in parallel (read-only),
+        // then route and commit in agent order (A.32).
+        let prepared = crate::simulation::parallel::map_indexed(n, self.threads, |i| {
+            self.propose_prepare(i, tick)
+        });
         let mut intents = vec![Intent::Idle; n];
-        #[allow(clippy::needless_range_loop)] // `propose` needs `&mut self`
-        for i in 0..n {
-            intents[i] = self.propose(i, tick);
+        for (i, p) in prepared.into_iter().enumerate() {
+            intents[i] = self.propose(i, tick, p);
             let k = self.agents[i].goal.kind as usize;
             self.today.goal_ticks[k] += 1;
         }
@@ -425,43 +432,51 @@ impl Simulation {
     // Propose
     // -----------------------------------------------------------------------
 
-    fn propose(&mut self, i: usize, tick: u64) -> Intent {
+    /// The read-only half of a proposal (A.32): the resting fast path, fresh
+    /// exploration rays, and the scored options. It reads only the frozen
+    /// world and this agent (its line memo is a private cache), so all agents
+    /// can be prepared in parallel; `propose_finish` then runs in agent order.
+    fn propose_prepare(&self, i: usize, tick: u64) -> Prepared {
         // Fast path: an agent resting in place keeps resting between periodic
         // re-checks, unless a need crosses its threshold. This changes only how
         // often a resting agent re-decides, not what it would decide.
-        {
-            let a = &self.agents[i];
-            if a.goal.kind == GoalKind::Rest && a.pos == a.goal.target {
-                let cx = self.ctx(tick);
-                let hungry = a.hunger >= decision::eat_threshold(a, &cx);
-                let tired = a.energy < self.config.decision.rest_until;
-                let period = if tired { 4 } else { 2 };
-                if !hungry && (tick - a.goal.since) % period != 0 {
-                    return Intent::Rest;
-                }
+        let a = &self.agents[i];
+        let cx = self.ctx(tick);
+        if a.goal.kind == GoalKind::Rest && a.pos == a.goal.target {
+            let hungry = a.hunger >= decision::eat_threshold(a, &cx);
+            let tired = a.energy < self.config.decision.rest_until;
+            let period = if tired { 4 } else { 2 };
+            if !hungry && (tick - a.goal.since) % period != 0 {
+                return Prepared::Rest;
             }
         }
         // Exploration rays only change when the agent moves or learns tiles.
-        let fresh_rays = {
-            let a = &self.agents[i];
-            let known = a.memory.known_count();
-            let stale = !a
-                .frontier_cache
-                .as_ref()
-                .is_some_and(|c| c.pos == a.pos && c.known == known);
-            stale.then(|| decision::compute_frontier_cache(a, &self.ctx(tick)))
+        let known = a.memory.known_count();
+        let stale = !a
+            .frontier_cache
+            .as_ref()
+            .is_some_and(|c| c.pos == a.pos && c.known == known);
+        let fresh = stale.then(|| decision::compute_frontier_cache(a, &cx));
+        // `evaluate` computes the rays itself when the cache is stale, so it
+        // scores exactly what it would with the fresh cache installed.
+        Prepared::Options {
+            fresh,
+            cands: decision::evaluate(a, &cx),
+        }
+    }
+
+    fn propose(&mut self, i: usize, tick: u64, prepared: Prepared) -> Intent {
+        let (fresh_rays, cands) = match prepared {
+            Prepared::Rest => return Intent::Rest,
+            Prepared::Options { fresh, cands } => (fresh, cands),
         };
         if let Some(fc) = fresh_rays {
             self.agents[i].frontier_cache = Some(fc);
         }
-        let cands = {
-            let cx = self.ctx(tick);
-            let a = &self.agents[i];
-            if self.config.sim.agent_kind == AgentKind::Random {
-                random_choice(decision::evaluate(a, &cx), &mut self.rng_agents)
-            } else {
-                decision::evaluate(a, &cx)
-            }
+        let cands = if self.config.sim.agent_kind == AgentKind::Random {
+            random_choice(cands, &mut self.rng_agents)
+        } else {
+            cands
         };
         let mut chosen: Option<Candidate> = None;
         for cand in cands.iter().take(6) {
@@ -2279,6 +2294,15 @@ fn insert_sorted(v: &mut Vec<u32>, id: u32) {
 /// Random baseline: the options in a uniformly random order, with Idle moved
 /// last, so the agent takes the first other option whose target it can reach
 /// and only idles when none is reachable.
+/// The read-only part of one agent's proposal (see `propose_prepare`).
+enum Prepared {
+    Rest,
+    Options {
+        fresh: Option<crate::agents::agent::FrontierCache>,
+        cands: Vec<Candidate>,
+    },
+}
+
 fn random_choice(mut cands: Vec<Candidate>, rng: &mut Rng) -> Vec<Candidate> {
     if cands.len() > 1 {
         rng.shuffle(&mut cands);

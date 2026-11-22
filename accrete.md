@@ -1720,3 +1720,25 @@ Tried and reverted, with no measurable gain: index-permutation sorting of candid
 | `P` frame-time readout; `--speed`, `--bench-frames N` | Performance work can be measured. |
 
 3D at 240 ticks/s went from **2.3 to 38 fps**. MAX runs about 210 ticks/s at day 150 without freezing.
+
+### A.32 Parallel proposal scoring (bit-identical)
+
+`propose` is split in two:
+* **`propose_prepare`** (read-only): the resting fast path, fresh exploration rays, and `evaluate`. It runs for all agents on up to 8 threads through `simulation::parallel::map_indexed`, which splits indices into contiguous ranges and concatenates the results in index order.
+* **`propose`**: everything that mutates state (routing, goal changes, pathology events, traces, the random baseline's shuffle on the `agents` stream). It stays sequential, in agent order.
+
+**Why the results cannot change:**
+* During proposal the world is frozen, and no agent reads another's choice (the existing design rule).
+* The only per-agent mutation in the parallel part is the agent's private line-cost memo (A.31), now behind an uncontended `Mutex` (`MemoCell`).
+* `evaluate` recomputes exploration rays when the cache is stale, so it scores exactly what the old code scored after installing the fresh cache.
+
+**Verified:**
+* The golden hashes, recorded single-threaded, pass with 8 threads in release and debug builds.
+* A new test compares state hashes every 400 ticks for 1 vs 7 threads, with tools and culture on.
+* The 300-day metrics are byte-identical for `ACCRETE_THREADS=1` and 8.
+
+**Speed:** 300 days of seed 2 goes from 24.5 s to 14.9 s (1.64×). Observing, meetings, home planning and routing remain serial.
+
+**Threads:** the count defaults to the machine's parallelism, capped at 8. `ACCRETE_THREADS` overrides it. The CLI sets it to 1 when `--jobs` already runs seeds in parallel. It is not state, so it is never saved or hashed.
+
+**Rule change:** CLAUDE.md rule 1 now allows parallelism inside one simulation only where it cannot change results, with this as the single sanctioned case.
