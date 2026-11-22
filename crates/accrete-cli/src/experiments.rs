@@ -163,6 +163,8 @@ pub fn run_suite(base: &Config, a: ExperimentsArgs) {
     // looking complete next to new per-seed files.
     let _ = std::fs::remove_file(a.out.join("emergence_summary.csv"));
     let _ = std::fs::remove_file(a.out.join("emergence_aggregate.csv"));
+    let _ = std::fs::remove_file(a.out.join(crate::index::INDEX_CSV));
+    let _ = std::fs::remove_file(a.out.join(crate::index::DB_NAME));
 
     println!(
         "emergence suite: {} experiment(s) × {} seed(s) × {} days → {}",
@@ -196,6 +198,10 @@ pub fn run_suite(base: &Config, a: ExperimentsArgs) {
     std::fs::write(&aggregate_path, &aggregate).expect("write aggregate");
     print_aggregate(&experiments, &results);
     println!("  aggregate written to {}", aggregate_path.display());
+    // Fresh rebuild + runs_index.csv so --jobs cannot leave a partial index.
+    crate::index::finalize_dir(&a.out).unwrap_or_else(|e| {
+        eprintln!("warning: run index finalize: {e}");
+    });
 }
 
 /// What one seed produced: its summary rows and, per experiment, the
@@ -776,7 +782,20 @@ mod tests {
                 read("emergence_summary.csv"),
                 read("emergence_aggregate.csv"),
                 read("control_seed2_metrics.csv"),
+                read(crate::index::INDEX_CSV),
             );
+            let n: i64 = {
+                let db = crate::index::default_db(&out);
+                rusqlite::Connection::open_with_flags(
+                    &db,
+                    rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                )
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))
+                .unwrap()
+            };
+            // control + trade intervention × 3 seeds
+            assert_eq!(n, 6, "index complete under --jobs {jobs}");
             let _ = std::fs::remove_dir_all(&out);
             files
         };

@@ -4,13 +4,19 @@
 //! queryable index of those manifests so Phase 2 campaigns can be listed and
 //! filtered without grepping directories.
 //!
-//! - **`accrete index rebuild -d DIR`** walks `DIR` for manifests and upserts
-//!   them into `DIR/runs.sqlite` (or `--db`).
+//! - **`accrete index rebuild -d DIR`** walks `DIR` (recursively) for manifests
+//!   and upserts them into `DIR/runs.sqlite` (or `--db`).
 //! - **`accrete index query`** prints matching rows as CSV.
 //! - **`accrete index sql`** runs a read-only SQL statement.
-//! - Writing a manifest also upserts into the output folder's `runs.sqlite`.
+//! - Writing a manifest also upserts into the output folder's `runs.sqlite`,
+//!   and refreshes a deterministic `runs_index.csv` beside it.
+//!
+//! In-process writers (`--jobs` threads) share a mutex so upserts cannot race.
+//! SQLite's on-disk pages are still not byte-stable across runs; compare
+//! `runs_index.csv` (or `index query`) when checking identity.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use accrete_core::config::AgentKind;
@@ -20,14 +26,26 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, params, params_from_ite
 use crate::manifest::{Manifest, Start};
 
 pub const DB_NAME: &str = "runs.sqlite";
+pub const INDEX_CSV: &str = "runs_index.csv";
 pub const SCHEMA_VERSION: i64 = 1;
+/// How deep `index rebuild` descends below `-d` for `*_manifest.json`.
+pub const MAX_MANIFEST_DEPTH: u32 = 32;
 
-/// True for the index DB and its WAL/SHM sidecars. These are convenience
-/// artefacts: upsert order and `indexed_at` can differ across `--jobs`, so
-/// byte-identity checks must skip them (the manifests remain the source of truth).
+/// Serialize all in-process index writers (`--jobs` shares one process).
+static INDEX_LOCK: Mutex<()> = Mutex::new(());
+
+/// True for the SQLite DB and its WAL/SHM sidecars. Binary pages are not
+/// compared across `--jobs`; use `runs_index.csv` for a stable dump.
 #[cfg(test)]
 pub fn is_index_artifact(name: &str) -> bool {
     name == DB_NAME || name.starts_with("runs.sqlite-")
+}
+
+fn with_index_lock<R>(f: impl FnOnce() -> R) -> R {
+    let _guard = INDEX_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    f()
 }
 
 const SCHEMA: &str = "
@@ -276,13 +294,21 @@ fn metrics_totals(manifest_dir: &Path, m: &Manifest) -> MetricTotals {
 
 /// Upsert one manifest into `db`. `manifest_path` is the file on disk.
 pub fn upsert(db: &Path, manifest_path: &Path) -> Result<(), String> {
+    with_index_lock(|| {
+        upsert_inner(db, manifest_path)?;
+        write_index_csv_beside(db)
+    })
+}
+
+fn upsert_inner(db: &Path, manifest_path: &Path) -> Result<(), String> {
     let m = Manifest::read(manifest_path)?;
     let conn = open_rw(db)?;
     let stored = store_path(db, manifest_path);
     let dir = manifest_path.parent().unwrap_or_else(|| Path::new("."));
     let totals = metrics_totals(dir, &m);
     let digest = hash::hex(m.config.digest());
-    let now = chrono_like_now();
+    // Deterministic: same as final_state_hash (no wall-clock).
+    let indexed_at = m.final_state_hash.clone();
     conn.execute(
         "INSERT INTO runs (
             manifest_path, label, seed, start_kind, start_tick, ticks, final_tick,
@@ -325,7 +351,7 @@ pub fn upsert(db: &Path, manifest_path: &Path) -> Result<(), String> {
             totals.total_deaths_deprivation,
             totals.hamlets,
             totals.trail_tiles,
-            now,
+            indexed_at,
         ],
     )
     .map_err(|e| format!("upserting {}: {e}", manifest_path.display()))?;
@@ -336,75 +362,101 @@ pub fn upsert(db: &Path, manifest_path: &Path) -> Result<(), String> {
 /// not fail the run (the manifest file is the source of truth).
 pub fn upsert_after_run(out_dir: &Path, manifest_path: &Path) {
     let db = default_db(out_dir);
-    // A few retries: under --jobs, writers can still contend after busy_timeout.
-    let mut last = String::new();
-    for attempt in 0..4 {
-        match upsert(&db, manifest_path) {
-            Ok(()) => return,
-            Err(e) => {
-                last = e;
-                if attempt + 1 < 4 {
-                    std::thread::sleep(Duration::from_millis(25 * (1 << attempt)));
-                }
-            }
-        }
+    if let Err(e) = upsert(&db, manifest_path) {
+        eprintln!("warning: could not update run index {}: {e}", db.display());
     }
-    eprintln!(
-        "warning: could not update run index {}: {last}",
-        db.display()
-    );
 }
 
-fn chrono_like_now() -> String {
-    // UTC seconds since epoch; enough to order index updates without a time crate.
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    format!("{secs}")
+/// Deterministic CSV dump next to the DB (`ORDER BY seed, label, manifest_path`).
+fn write_index_csv_beside(db: &Path) -> Result<(), String> {
+    if !db.is_file() {
+        return Ok(());
+    }
+    let dir = db.parent().unwrap_or_else(|| Path::new("."));
+    let csv = query_unlocked(&QueryArgs {
+        db: db.to_path_buf(),
+        seed: None,
+        label: None,
+        commit: None,
+        digest: None,
+        limit: 1_000_000,
+    })?;
+    std::fs::write(dir.join(INDEX_CSV), csv)
+        .map_err(|e| format!("writing {}/{}: {e}", dir.display(), INDEX_CSV))?;
+    Ok(())
 }
 
-/// Find `*_manifest.json` under `dir` (non-recursive and one level of
-/// subdirectories is enough for sweep/experiment layouts).
-pub fn find_manifests(dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let mut out = Vec::new();
-    let read = |d: &Path, out: &mut Vec<PathBuf>| -> Result<(), String> {
-        let entries = std::fs::read_dir(d).map_err(|e| format!("reading {}: {e}", d.display()))?;
-        for e in entries {
-            let e = e.map_err(|e| e.to_string())?;
-            let p = e.path();
-            if p.is_file() {
-                let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
-                if name.ends_with("_manifest.json") {
-                    out.push(p);
-                }
-            }
+fn remove_db_files(db: &Path) {
+    let _ = std::fs::remove_file(db);
+    let _ = std::fs::remove_file(PathBuf::from(format!("{}-wal", db.display())));
+    let _ = std::fs::remove_file(PathBuf::from(format!("{}-shm", db.display())));
+}
+
+/// Rebuild the index from every manifest under `dir` (fresh DB + CSV). Used at
+/// the end of multi-run commands so `--jobs` leaves a complete, ordered index.
+pub fn finalize_dir(dir: &Path) -> Result<(), String> {
+    let db = default_db(dir);
+    with_index_lock(|| {
+        remove_db_files(&db);
+        let (ok, err) = rebuild_inner(dir, &db)?;
+        write_index_csv_beside(&db)?;
+        if err > 0 {
+            return Err(format!(
+                "indexed {ok} manifest(s) into {} ({err} failed)",
+                db.display()
+            ));
         }
         Ok(())
-    };
-    read(dir, &mut out)?;
-    // One level down (e.g. results/emergence nested copies are unusual; still
-    // scan immediate subdirs so a user can point at a parent folder).
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for e in entries.flatten() {
-            let p = e.path();
-            if p.is_dir() {
-                let _ = read(&p, &mut out);
-            }
-        }
-    }
+    })
+}
+
+/// Find `*_manifest.json` under `dir`, recursively up to [`MAX_MANIFEST_DEPTH`].
+pub fn find_manifests(dir: &Path) -> Result<Vec<PathBuf>, String> {
+    let mut out = Vec::new();
+    find_manifests_rec(dir, 0, &mut out)?;
     out.sort();
     out.dedup();
     Ok(out)
 }
 
+fn find_manifests_rec(dir: &Path, depth: u32, out: &mut Vec<PathBuf>) -> Result<(), String> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("reading {}: {e}", dir.display()))?;
+    for e in entries {
+        let e = e.map_err(|e| e.to_string())?;
+        let p = e.path();
+        if p.is_file() {
+            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if name.ends_with("_manifest.json") {
+                out.push(p);
+            }
+        } else if p.is_dir() {
+            if depth >= MAX_MANIFEST_DEPTH {
+                eprintln!(
+                    "warning: skipping {}: deeper than {MAX_MANIFEST_DEPTH} levels below the index root",
+                    p.display()
+                );
+            } else {
+                find_manifests_rec(&p, depth + 1, out)?;
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn rebuild(dir: &Path, db: &Path) -> Result<(usize, usize), String> {
+    with_index_lock(|| {
+        let counts = rebuild_inner(dir, db)?;
+        write_index_csv_beside(db)?;
+        Ok(counts)
+    })
+}
+
+fn rebuild_inner(dir: &Path, db: &Path) -> Result<(usize, usize), String> {
     let manifests = find_manifests(dir)?;
     let mut ok = 0usize;
     let mut err = 0usize;
     for m in &manifests {
-        match upsert(db, m) {
+        match upsert_inner(db, m) {
             Ok(()) => ok += 1,
             Err(e) => {
                 eprintln!("warning: {}: {e}", m.display());
@@ -441,6 +493,10 @@ pub struct QueryArgs {
 }
 
 pub fn query(a: &QueryArgs) -> Result<String, String> {
+    query_unlocked(a)
+}
+
+fn query_unlocked(a: &QueryArgs) -> Result<String, String> {
     let conn = open_ro(&a.db)?;
     let mut sql = String::from(
         "SELECT seed, label, ticks, final_tick, population, food_regrowth, agent_kind, \
@@ -805,6 +861,24 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM runs", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0, "gone absolute path is dropped");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn find_manifests_walks_nested_directories() {
+        let dir = tmp();
+        let nested = dir.join("a").join("b").join("c");
+        std::fs::create_dir_all(&nested).unwrap();
+        write_manifest(&nested, "deep", 7, 24);
+        write_manifest(&dir, "top", 1, 24);
+        let found = find_manifests(&dir).unwrap();
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert!(
+            found
+                .iter()
+                .any(|p| p.ends_with("deep_seed7_manifest.json")),
+            "{found:?}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

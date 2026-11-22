@@ -84,7 +84,7 @@ fn every_output_is_identical_whatever_the_number_of_jobs() {
             .map(|e| e.unwrap().path())
             .filter_map(|p| {
                 let name = p.file_name()?.to_str()?.to_string();
-                // runs.sqlite (and WAL/SHM) are not byte-stable across --jobs.
+                // SQLite pages are not byte-stable; runs_index.csv is compared.
                 if name == "runs.sqlite" || name.starts_with("runs.sqlite-") {
                     return None;
                 }

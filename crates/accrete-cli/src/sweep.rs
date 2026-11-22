@@ -417,6 +417,9 @@ pub fn run_sweep(base: &Config, a: SweepArgs) {
         "  wrote sweep_runs.csv, sweep_points.csv and sweep_design.json to {}",
         a.out.display()
     );
+    crate::index::finalize_dir(&a.out).unwrap_or_else(|e| {
+        eprintln!("warning: run index finalize: {e}");
+    });
 }
 
 fn point_text(point: &Point) -> String {

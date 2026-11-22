@@ -256,7 +256,7 @@ enum Cmd {
 #[derive(Subcommand)]
 enum IndexCmd {
     /// Walk a directory for `*_manifest.json` and upsert them into the index.
-    /// Scans `dir` and one level of subdirectories (not deeper).
+    /// Scans `dir` recursively (up to 32 levels).
     Rebuild {
         /// Directory that holds manifests (and usually the DB).
         #[arg(short, long, default_value = "results")]

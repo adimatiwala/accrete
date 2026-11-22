@@ -1458,11 +1458,13 @@ Phase 2 campaigns leave many manifests on disk. This entry makes them queryable 
 |---|---|
 | **Bundled SQLite (`rusqlite` + `bundled`)** | Offline on macOS and Windows with no system library; DuckDB would be heavier for a simple upsert/query CLI. |
 | **`runs.sqlite` next to the outputs** | Same folder as the manifests; moving a results tree keeps the index with it. |
-| **Auto-upsert on manifest write** | Every `run` / `branch` / `experiments` / `sweep` path already goes through `run::drive`; failures to index warn and do not fail the run (the JSON manifest is the source of truth). The DB is not byte-identical across `--jobs` (upsert order and `indexed_at`); identity checks skip `runs.sqlite*`. |
-| **`accrete index rebuild` / `query` / `sql`** | Rebuild walks `*_manifest.json` one level deep and drops rows whose files are gone. Query filters are ANDed CSV. SQL is read-only (`SELECT` / `WITH` / `PRAGMA`). |
+| **Auto-upsert on manifest write** | Every `run` / `branch` / `experiments` / `sweep` path already goes through `run::drive`; failures to index warn and do not fail the run (the JSON manifest is the source of truth). In-process writers take a mutex (so `--jobs` cannot race). `indexed_at` is the final state hash (deterministic). |
+| **`runs_index.csv`** | Refreshed beside the DB after each upsert / rebuild / finalize. Ordered by seed, label, path — this is what identity checks compare. SQLite page bytes are still skipped (`runs.sqlite*`). |
+| **`finalize_dir` after suites** | `experiments` and `sweep` rebuild a fresh DB from all manifests and rewrite the CSV, so a parallel campaign cannot leave a partial index. |
+| **`accrete index rebuild` / `query` / `sql`** | Rebuild walks `*_manifest.json` recursively (depth 32) and drops rows whose files are gone. Query filters are ANDed CSV. SQL is read-only (`SELECT` / `WITH … SELECT` / safe `PRAGMA`). |
 | **Indexed columns** | Label, seed, ticks, hashes, config digest, a few knobs (`food_regrowth`, `agent_kind`, trade/trails), build provenance, and final metrics totals when the CSV exists. |
 | **`--save-every N`** | Writes `<label>_seed<S>_day<D>.snap.json` after each completed day with `day % N == 0` (not the start/load day) and lists them in the manifest. Distinct from `--snap-every` (PNG maps). A conflicting prior manifest for the same label/seed is refused *before* the loop so mid-run snaps are not clobbered. A shorter prior run is allowed only when its final metrics population is 0 (extinction); a completed shorter run vs a longer `--days` is refused. Corrupt manifests are refused rather than overwritten. |
-| **Read-only query/sql** | `index query` / `index sql` open the DB read-only and do not create a missing file. SQL allows `SELECT`, `WITH … SELECT`, and a short allowlist of non-mutating `PRAGMA`s; writers use a busy timeout and short retries under `--jobs`. |
+| **Read-only query/sql** | `index query` / `index sql` open the DB read-only and do not create a missing file. SQL allows `SELECT`, `WITH … SELECT`, and a short allowlist of non-mutating `PRAGMA`s; writers use a busy timeout for any cross-process use. |
 
 **Still deferred from A.10:** Parquet daily metrics, Sobol designs, surrogate models, sensitivity indices / PDPs.
 
