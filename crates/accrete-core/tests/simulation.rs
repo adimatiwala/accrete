@@ -193,6 +193,56 @@ fn branches_from_one_snapshot_diverge_only_by_the_intervention() {
     );
 }
 
+/// Residents outside a flooded home do not re-plan the same failing route
+/// every tick: a target that could not be reached waits out its cooldown.
+#[test]
+fn flooded_home_is_not_retried_every_tick() {
+    use accrete_core::config::{DisruptionKind, ScriptedDisruption};
+    let c = Config::default();
+    let mut sim = Simulation::new(common::PRIMARY_SEED, c.clone());
+    sim.run(40 * TICKS_PER_DAY);
+    let home = sim
+        .world
+        .homes
+        .iter()
+        .max_by_key(|h| (h.residents.len(), std::cmp::Reverse(h.id)))
+        .expect("homes by day 40")
+        .pos;
+    let mut cfg = c.clone();
+    cfg.disruption.scripted.push(ScriptedDisruption {
+        start_day: 40,
+        days: 10,
+        kind: DisruptionKind::Block,
+        slow_factor: 3,
+        center: [home.x, home.y],
+        radius: 3,
+        busiest_tiles: 0,
+    });
+    sim.set_config(cfg).expect("valid intervention");
+    sim.run(10 * TICKS_PER_DAY);
+
+    let cooldown = u64::from(c.memory.unreachable_cooldown_ticks);
+    let mut last = std::collections::BTreeMap::new();
+    let mut failures = 0;
+    for e in &sim.events.events {
+        if let (Some(id), EventKind::RouteFailed { target }) = (e.agent, &e.kind) {
+            // Agents caught inside the flood cannot reach anything; see A.15.
+            if e.pos.dist2(home) <= 9 {
+                continue;
+            }
+            failures += 1;
+            if let Some(prev) = last.insert((id, *target), e.tick) {
+                assert!(
+                    e.tick - prev >= cooldown,
+                    "agent {id} retried {target:?} after {} ticks",
+                    e.tick - prev
+                );
+            }
+        }
+    }
+    assert!(failures > 0, "the flood caused no route failures");
+}
+
 /// Week 4 Day 2: a route disruption on the busiest trails acts only through
 /// movement costs. Nobody ever stands on a blocked tile, the tiles are
 /// restored when it ends, conservation holds every tick, and random droughts

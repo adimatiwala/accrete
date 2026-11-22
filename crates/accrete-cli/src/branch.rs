@@ -100,12 +100,10 @@ pub fn parse_disruption(s: &str) -> Result<ScriptedDisruption, String> {
         }
         _ => return Err(err()),
     }
-    if d.days == 0 {
-        return Err("--disrupt DAYS must be at least 1".into());
-    }
     if p[3] == "busiest" && d.busiest_tiles == 0 {
         return Err("--disrupt busiest:N needs N of at least 1".into());
     }
+    d.validate().map_err(|e| format!("--disrupt: {e}"))?;
     Ok(d)
 }
 
@@ -371,6 +369,7 @@ mod tests {
             "x:15:block:busiest:3",
             "60:0:block:busiest:3",
             "60:15:block:busiest:0",
+            "60:15:slow255:busiest:3",
         ] {
             assert!(parse_disruption(bad).is_err(), "{bad}");
         }

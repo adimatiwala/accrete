@@ -769,6 +769,9 @@ pub fn evaluate(agent: &Agent, cx: &Ctx) -> Vec<Candidate> {
 
     // --- Idle ---------------------------------------------------------------
     out.push(Candidate::new(GoalKind::Idle, agent.pos));
+    // A place the agent recently failed to route to (a flooded home, say) is
+    // not retried until its cooldown ends.
+    out.retain(|c| c.target == agent.pos || !agent.memory.is_failed_target(c.target, cx.tick));
 
     // --- Hysteresis and tie-breaking jitter ---------------------------------
     for cand in out.iter_mut() {

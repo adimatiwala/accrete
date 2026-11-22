@@ -40,7 +40,9 @@ pub struct Config {
 
 impl Config {
     pub fn from_toml_str(s: &str) -> Result<Self, String> {
-        toml::from_str(s).map_err(|e| e.to_string())
+        let c: Self = toml::from_str(s).map_err(|e| e.to_string())?;
+        c.disruption.validate()?;
+        Ok(c)
     }
 
     pub fn to_toml_string(&self) -> String {
@@ -669,6 +671,38 @@ impl Default for PathologyConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct DisruptionConfig {
     pub scripted: Vec<ScriptedDisruption>,
+}
+
+impl DisruptionConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        self.scripted
+            .iter()
+            .try_for_each(ScriptedDisruption::validate)
+    }
+}
+
+impl ScriptedDisruption {
+    /// Reject entries that would silently do nothing or something else than
+    /// written. A slow factor of 255 is reserved: it would tie with `Blocked`
+    /// when overlapping disruptions keep the worst effect.
+    pub fn validate(&self) -> Result<(), String> {
+        let at = format!("disruption starting on day {}", self.start_day);
+        if self.days == 0 {
+            return Err(format!("{at}: days must be at least 1"));
+        }
+        if self.kind == DisruptionKind::Slow && !(2..=254).contains(&self.slow_factor) {
+            return Err(format!(
+                "{at}: slow_factor must be in 2..=254, got {}",
+                self.slow_factor
+            ));
+        }
+        if self.busiest_tiles > 0 && self.radius > 0 {
+            return Err(format!(
+                "{at}: set either busiest_tiles or center/radius, not both"
+            ));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]

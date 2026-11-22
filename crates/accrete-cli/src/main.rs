@@ -7,7 +7,7 @@
 //! accrete run --load results/seed1_day100.snap.json --days 200
 //! accrete branch --load results/seed1_day100.snap.json --days 200 \
 //!     --drought 100:200:64:64:20:0.6 --label-b drought
-//! accrete branch --load results/seed1_day100.snap.json --days 60 \\
+//! accrete branch --load results/seed1_day100.snap.json --days 60 \
 //!     --disrupt 100:20:block:busiest:12 --label-b cut
 //! ```
 

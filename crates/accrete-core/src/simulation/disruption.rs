@@ -75,7 +75,7 @@ pub fn select_tiles(world: &World, s: &ScriptedDisruption) -> Vec<u32> {
             .map(|(_, i)| i)
             .collect()
     } else {
-        let r = s.radius as i32;
+        let r = s.radius.min(world.dims.width.max(world.dims.height)) as i32;
         let c = crate::geom::Pos::new(s.center[0], s.center[1]);
         let mut v = Vec::new();
         for dy in -r..=r {
@@ -244,5 +244,38 @@ mod tests {
         assert_eq!(world.disruption(p), Disruption::None);
         assert!(world.disruption_at.is_empty());
         assert_eq!(state.history.len(), 2);
+    }
+
+    #[test]
+    fn huge_radius_is_clamped_to_the_map() {
+        let c = Config::default();
+        let world = crate::world::generate_world(1, &c);
+        let land = (0..world.tiles.len())
+            .filter(|&i| world.tiles[i].is_land())
+            .count();
+        assert_eq!(select_tiles(&world, &disc([64, 64], u32::MAX)).len(), land);
+    }
+
+    #[test]
+    fn invalid_disruptions_are_rejected() {
+        assert!(disc([0, 0], 3).validate().is_ok());
+        let mut zero_days = disc([0, 0], 3);
+        zero_days.days = 0;
+        let mut both = disc([0, 0], 3);
+        both.busiest_tiles = 5;
+        for bad_factor in [0, 1, 255] {
+            let mut s = disc([0, 0], 3);
+            s.kind = DisruptionKind::Slow;
+            s.slow_factor = bad_factor;
+            assert!(s.validate().is_err(), "slow factor {bad_factor}");
+        }
+        assert!(zero_days.validate().is_err());
+        assert!(both.validate().is_err());
+        let toml = "[[disruption.scripted]]\nstart_day = 5\ndays = 0\n";
+        assert!(Config::from_toml_str(toml).is_err());
+        let mut sim = crate::Simulation::new(1, Config::default());
+        let mut cfg = sim.config.clone();
+        cfg.disruption.scripted.push(both);
+        assert!(sim.set_config(cfg).is_err());
     }
 }

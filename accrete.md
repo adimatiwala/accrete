@@ -1224,3 +1224,14 @@ Normal agents are far better than random, so the decision logic works. Limited s
 * **Golden snapshot bytes re-recorded.** `snapshot_seed1_t100` was re-recorded for `SNAPSHOT_FORMAT` 2. The state hashes were unchanged by the rebase.
 * **`--disrupt` checks match `--drought`.** A zero-day disruption and `busiest:0` are rejected; `busiest:0` would otherwise have become a radius-0 disruption at tile (0, 0). A disruption starting after the branches end gets a warning. A disruption-only intervention is detected with `Config::differs_in_results`, like every other intervention.
 * **Checked `set_config`.** The whole-world disruption test now fails if `set_config` rejects its config, instead of ignoring the `Result`.
+
+**Review fixes** (from a review agent's pass over this PR; it found no determinism, snapshot or blocked-tile violations, and resuming mid-disruption, including overlapping disruptions, matched an uninterrupted run):
+* **Flooded homes retried every tick.** A route failure records the target in `failed_targets`, but only exploration checked it, so residents locked out of a flooded home re-planned to it almost every tick (113 failures in 10 days for one agent). `decision::evaluate` now drops any option whose target is on that cooldown, unless the agent is already there. No golden hash changed: normal runs never hit this.
+* **`slow255` could cancel a block.** A slow factor of 255 tied with `Blocked` when overlapping effects keep the worst, so the tile could stay passable. Slow factors are now limited to 2–254.
+* **Disruptions from TOML were not validated.** `ScriptedDisruption::validate` rejects zero days, slow factors outside 2–254, and entries setting both `busiest_tiles` and `radius`. It runs on config load, in `set_config` and for `--disrupt`.
+* **Huge radii.** The radius is clamped to the map size, so a radius beyond 46,340 can no longer overflow or loop for minutes.
+* **Overlays.** The move-cost overlay and the viewer's tile inspector now show disrupted costs.
+* **New tests:** validation (including through TOML and `set_config`), the radius clamp, and residents of a flooded home waiting out the cooldown. That test fails without the fix.
+* **Known limitations, not changed here:**
+  * **Trapped agents.** An agent standing inside a blocked *area* (not at its edge) cannot move until the flood ends, because it may leave a blocked tile only onto an open one. It also re-tries several targets a tick, since its 8 failed-target slots overflow.
+  * **Crowded changed-tile memory.** A large flood can fill the 32 changed-tile slots and push out trail and road sightings.

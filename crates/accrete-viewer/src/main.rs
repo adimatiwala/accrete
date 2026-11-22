@@ -754,7 +754,7 @@ impl App {
             ),
             dim,
         );
-        let mp = accrete_core::world::movement::enter_cost(t, &self.sim.config.movement);
+        let mp = w.enter_cost(p, &self.sim.config.movement);
         line(
             &format!(
                 "move cost {}  traffic {:.1}  visible tiles {}",
