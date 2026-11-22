@@ -41,6 +41,7 @@ cargo run --release -p accrete-cli -- branch --load results/seed1_day100.snap.js
 cargo run --release -p accrete-cli -- run --seed 1 --set resources.food_regrowth=0.06 --label scarce
 cargo run --release -p accrete-cli -- run --seed 1 --set infrastructure.household_weight=0 --set social.reciprocity_enabled=false --label selfish
 cargo run --release -p accrete-cli -- experiments --seed 1 --days 100 -o results/emergence
+cargo run --release -p accrete-cli -- experiments --seed 1,2,3 --days 300 --only scarcity40,scarcity20 -o results/scarcity
 
 # Why did agent 42 do that? Tick-by-tick options and utility terms
 cargo run --release -p accrete-cli -- trace --seed 1 --day 120 --ticks 24 --agent 42 --options

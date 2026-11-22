@@ -1052,7 +1052,7 @@ All four pathology counters were 0 on every seed. The emergent findings:
 3. Families upgrade crowded homes (37–54 shelter levels).
 4. Knowledge spreads through meetings. Barter happens, though at a low rate.
 
-Earlier calibrations (see A.4) showed the controlled-scarcity response the spec asks for. With food regrowth ×1 / ×0.4 / ×0.2, populations reached 605 / 157 / 42, **through fertility, not starvation**: a preventive check. These scarcity runs predate the trade, sharing, shelter and returns systems and have not been re-run.
+Earlier calibrations (see A.4) showed the controlled-scarcity response the spec asks for. With food regrowth ×1 / ×0.4 / ×0.2, populations reached 605 / 157 / 42, **through fertility, not starvation**: a preventive check. Those runs predated trade, sharing, shelters and experienced returns. **They were re-run with the full system on seeds 1–3 in A.18:** 498 / 142 / 34 people at day 300, still with no starvation deaths.
 
 **Honest negatives** (valid outcomes, per Section 1):
 * **Roads barely appear** (0–1 tiles in 300 days). Under the spec's benefit rule, only trails crossed by a household dozens of times a month qualify, and agents forage close to home.
@@ -1302,3 +1302,32 @@ One seed and 100 days, not yet a finding. Phase 2 (Section 9) is multi-seed aver
 * `--days 0` and an empty seed list are rejected before any run.
 * An ablation that is a no-op under the base config (e.g. `--set social.trade_enabled=false` then `--only trade`) exits with an error instead of panicking on `assert!`.
 * `--only` duplicates are dropped in order; the trails description matches what `trails.enabled` actually does (formation, not a separate cost gate).
+
+### A.18 Scarcity rerun with the full system (Section 9, "Scarcity")
+
+The scarcity results in A.9 came from calibration runs before trade, knowledge sharing, shelters and experienced foraging returns existed. This entry re-runs them with everything in place.
+
+**How:**
+* `accrete experiments` gains two levels, `scarcity40` and `scarcity20`, which scale the base config's `resources.food_regrowth` by 0.4 and 0.2. They are the same levels as the original calibration, and they compose with `--set`.
+* Run: `accrete experiments --seed N --days 300 --only scarcity40,scarcity20` for seeds 1–3, each from a fresh world with a shared control.
+* While adding this, a reporting bug in the suite's summary was fixed. The `deaths_deprivation_*` columns held the **final day's** count, not the run's. The summary now has run totals (`total_births_*`, `total_deaths_deprivation_*`, `total_deaths_old_age_*`, `total_home_moves_*`) and `mean_lifespan_days_*`. The header is a single constant, and a test checks every row against it by column name.
+
+**Results at day 300** (seeds 1 / 2 / 3; the means are of the three seeds):
+
+| Food regrowth | Population | Peak (day) | Births | Starvation deaths | Old-age deaths | Mean lifespan | Home moves | Settlements (hamlets + forming) | Clustering R |
+|---|---|---|---|---|---|---|---|---|---|
+| ×1.0 | 513 / 522 / 458 (mean 498) | still growing | 641 | **0** | 243 | 221 d | 241 | 1.7 + 2.0 | 0.49 |
+| ×0.4 | 148 / 146 / 133 (mean 142) | ~180 (day 75–100) | 219 | **0** | 176 | 223 d | 26 | 0 | 0.94 |
+| ×0.2 | 40 / 35 / 26 (mean 34) | ~120 (day 60–70) | 58 | **0** | 124 | 225 d | 19 | 0 | 1.17 |
+
+**What this shows** (three seeds, so a pattern, not yet a Phase 2 finding):
+1. **The preventive check survives the new systems.** Across all nine runs, nobody starved and lifespans are unchanged (221–225 days). Population falls only because births fall (641 → 219 → 58), through the agents' own reproduction motives: household food security, perceived land, and experienced foraging returns. Mean hunger over the last 30 days is the same at every level (0.18–0.19 against 0.19). Agents keep themselves fed and have fewer children. The populations are close to the original calibration (157 / 42 against 142 / 34), so trade, sharing and shelters did not change the scarcity response.
+2. **Scarce populations settle.** At ×0.4 the population peaks around day 75–100 and then barely moves (−6 to +1 over the last 50 days). At ×0.2 it falls from about 120 to 26–40 and is nearly flat by day 300, with only 5–6 births in the last 50 days, so it is still close to its floor. The full-food control is still growing at day 300 and has not reached equilibrium.
+3. **Scarcity prevents settlements.** Under either level no hamlet forms and homes are spread randomly (R ≈ 0.94) or even dispersed (R ≈ 1.17), against clustered (R ≈ 0.49) with full food. Clustering in this model depends on local surplus: without it, households spread out to get enough land each.
+4. **No rise in migration.** Total home moves fall from 241 to 26 and 19. Per final-day resident the picture is mixed (0.48 at ×1.0, 0.18 at ×0.4, 0.56 at ×0.2, where the denominator is tiny), so scarcity does not clearly drive people to move. The spec expected it to. Here, fewer births mean fewer adult children leaving home, and uncrowded homes give no reason to move. Treat this as an open question for Phase 2: a proper migration measure (moves per person-year, distance moved) is needed before drawing a conclusion.
+5. **Side effects of a small population:** standing food is slightly *higher* under scarcity, because the much smaller population leaves most tiles near capacity, and foraging radius is shorter (3.65 → 2.97 → 2.63 tiles).
+
+**Tests:**
+* Both levels scale the base rate and have valid labels.
+* A 30-day ×0.2 pair has less standing food, no more people, and a diverging hash.
+* Every summary row matches the header column by column, and the totals are run totals.
