@@ -1173,17 +1173,31 @@ This entry also covers the CLAUDE.md change that was merged before this changelo
 
 | Decision | Rationale |
 |---|---|
-| **Random baseline** (`sim.agent_kind = "random"`) | Shuffles the scored options and takes the first one with a reachable target, so each action is valid but chosen at random. It draws from the `agents` stream, which normal agents never use, so it has its own stream (as Section 10 asks) without changing any golden hash. |
+| **Random baseline** (`sim.agent_kind = "random"`) | Shuffles the scored options, moves Idle last, and takes the first one with a reachable target, so each action is valid but chosen at random, and the agent idles only when nothing else is reachable. It draws from the `agents` stream, which normal agents never use, so it has its own stream (as Section 10 asks) without changing any golden hash. |
 | **Omniscient baseline** (`sim.agent_kind = "omniscient"`) | Same decision logic, perfect knowledge, the **same memory limits**. On every observation the agent knows the whole map's terrain, and for each resource it remembers the *nearest* tiles holding it (true amounts, ring scan nearest-first, up to its pool size), likewise the nearest homes. Routes use true costs. Keeping the memory limits means the gap to normal agents measures what limited *sight and stale memory* cost, not what extra memory would buy. |
-| **Benchmark ranges** in `tests/benchmarks/primary_seed.toml` | Seed 1 at day 100: population, starvation deaths, hunger, homed share, the four pathology counters, walking per unit of food, homes near fertile land, and generational turnover (births and old-age deaths). The observed values when the ranges were set are written next to each range. Golden hashes show that something changed; these show whether behaviour got worse. |
+| **Benchmark ranges** in `tests/benchmarks/primary_seed.toml` | Seed 1 at day 100: population, starvation deaths, hunger, homed share, the four pathology counters, walking per unit of food (with a lower bound, to catch agents that stop moving), how much more often homes sit near good land than land in general does, generational turnover (births and old-age deaths), and not hitting the cap. The observed values when the ranges were set are written next to each range. Golden hashes show that something changed; these show whether behaviour got worse. |
 | **Baseline ordering** as a test | At day 60, normal agents must reach at least 2× the random population and at most 1.05× the omniscient one. |
 
 **First results** (seed 1, 100 days):
 
 | Agents | Population | Starvation deaths | Tiles walked per unit of food |
 |---|---|---|---|
-| Random | 24 | 72 | 4.81 |
+| Random | 34 | 58 | 5.49 |
 | Normal | 284 | 0 | 0.48 |
-| Omniscient | 321 | 0 | 0.26 |
+| Omniscient | 318 | 0 | 0.25 |
 
 Normal agents are far better than random, so the decision logic works. Limited sight and memory cost about 12 % of the population and nearly double the walking, so the knowledge limits genuinely constrain behaviour. Random agents also trip the oscillation detector thousands of times, a useful check that the detector responds.
+
+**Review fixes** (from a review agent's pass over this PR):
+* **Roads invisible when choosing.** Omniscient agents routed with true costs but *scored* options with no-road costs, ignored roads when deciding whether to upgrade a trail, and checked "starved beside food" with remembered costs. `decision::omniscient` and `decision::believed_path` now give them the true world wherever a belief is read.
+* **Wrong home evicted.** A tile holding several homes could overflow the home pool and evict the home the agent stood on. The cap is now checked per home.
+* **Full-map scans.** The ring scan visited every cell of each ring's square and never stopped while the world had fewer homes or resource tiles than a pool holds, so it scanned the whole map on every observation (about 1.1 s per simulated day early in a run). It now walks only each ring's perimeter and caps each pool at what the world actually holds. Thirty omniscient days take 1.3 s, down from 3.5 s.
+* **Unreachable food crowding out reachable food.** A nearest-but-unreachable resource (across water, say) was re-added on every observation. Entries still on their unreachable cooldown are now skipped, so the pool fills with other places; they are offered again after the cooldown.
+* **Idle not last.** The random baseline's comment said Idle was a last resort, but it was shuffled like everything else. It is now moved last, so random agents idle only when nothing else is reachable. This raised the random baseline at day 100 from 24 to 34 people.
+* **Benchmarks:**
+  * "homes near fertile land" was nearly trivial, because 94 % of all land qualifies. It is now the lift over the land average (0.10 observed, range ≥ 0.03).
+  * Walking per unit of food gained a lower bound.
+  * Boolean metrics such as `at_cap` can be range keys.
+  * A malformed ranges file names the key at fault.
+  * The observed baseline ratios are recorded next to their limits.
+* **New tests:** the home pool on shared tiles; deterministic, pool-respecting omniscient observation; the cooldown skip; omniscient travel estimates using true roads; omniscient runs staying on land and round-tripping through snapshots; and the random baseline being deterministic with Idle last.

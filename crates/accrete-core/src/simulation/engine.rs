@@ -1520,14 +1520,26 @@ impl Simulation {
             if p == a.pos {
                 return true;
             }
-            if let Ok(path) = self.scratch.find_path(
-                &self.world,
-                &AgentBelief(&a.memory),
-                a.pos,
-                p,
-                mc,
-                mc.astar_max_expansions,
-            ) {
+            let found = if self.config.sim.agent_kind == AgentKind::Omniscient {
+                self.scratch.find_path(
+                    &self.world,
+                    &Omniscient,
+                    a.pos,
+                    p,
+                    mc,
+                    mc.astar_max_expansions,
+                )
+            } else {
+                self.scratch.find_path(
+                    &self.world,
+                    &AgentBelief(&a.memory),
+                    a.pos,
+                    p,
+                    mc,
+                    mc.astar_max_expansions,
+                )
+            };
+            if let Ok(path) = found {
                 if path.cost <= budget {
                     return true;
                 }
@@ -2011,9 +2023,17 @@ fn home_sighting(world: &World, hid: HomeId, base_capacity: u32) -> HomeSighting
 /// memory limits as normal agents. The agent knows the terrain of the whole
 /// map, and for each resource it remembers the *nearest* tiles that hold it
 /// (true amounts, seen now), up to its pool size; likewise the nearest homes.
-/// Routes use true costs (see `route_belief`). Its decision logic is the same
-/// as a normal agent's, so the gap between the two measures what limited
-/// sight and memory cost.
+/// Choosing, scoring and routing use the true world (`decision::omniscient`).
+/// Its decision logic is the same as a normal agent's, so the gap between the
+/// two measures what limited sight and memory cost. `memory.enabled = false`
+/// does not apply to it: it always knows.
+///
+/// Tiles are visited ring by ring (Chebyshev distance), each ring's perimeter
+/// in a fixed order, and the scan stops once every pool is full or the world
+/// has nothing more to offer, so it never walks the whole map needlessly.
+/// A resource the agent recently failed to reach (its memory still has the
+/// `unreachable_until` cooldown) is skipped so it cannot crowd out reachable
+/// ones; it is offered again after the cooldown.
 fn observe_omniscient(a: &mut Agent, world: &World, c: &Config, tick: u64) {
     let mem = &c.memory;
     let n = world.dims.len();
@@ -2022,66 +2042,86 @@ fn observe_omniscient(a: &mut Agent, world: &World, c: &Config, tick: u64) {
             a.memory.learn(world.dims.pos(i));
         }
     }
+    let amount_at = |p: Pos, res: Resource| {
+        let t = world.tile(p);
+        let base = match res {
+            Resource::Food => t.food,
+            Resource::Wood => t.wood,
+            Resource::Stone => t.stone,
+        };
+        base + world.pile_at(p).map_or(0.0, |pl| pl.goods.get(res))
+    };
+    let cooling = |p: Pos, res: Resource| {
+        a.memory
+            .resources
+            .iter()
+            .any(|m| m.pos == p && m.resource == res && m.unreachable_until > tick)
+    };
+    // How many entries each pool can actually get: its size, or fewer if the
+    // world holds fewer eligible tiles.
+    let mut available = [0usize; 3];
+    for i in 0..n as u32 {
+        let p = world.dims.pos(i);
+        for res in Resource::ALL {
+            if amount_at(p, res) >= mem.min_amount {
+                available[res.index()] += 1;
+            }
+        }
+    }
     let caps = [
-        AgentMemory::slots(Resource::Food, mem),
-        AgentMemory::slots(Resource::Wood, mem),
-        AgentMemory::slots(Resource::Stone, mem),
+        AgentMemory::slots(Resource::Food, mem).min(available[0]),
+        AgentMemory::slots(Resource::Wood, mem).min(available[1]),
+        AgentMemory::slots(Resource::Stone, mem).min(available[2]),
     ];
-    let home_cap = mem.home_slots as usize;
+    let home_cap = (mem.home_slots as usize).min(world.homes.len());
     let mut found: [Vec<crate::agents::memory::ResourceMemory>; 3] = Default::default();
-    let mut homes_seen = 0usize;
+    let mut homes: Vec<(HomeId, Pos)> = Vec::new();
+    type Found = [Vec<crate::agents::memory::ResourceMemory>; 3];
+    let visit = |p: Pos, found: &mut Found, homes: &mut Vec<(HomeId, Pos)>| {
+        if !world.contains(p) {
+            return;
+        }
+        for res in Resource::ALL {
+            let k = res.index();
+            if found[k].len() >= caps[k] {
+                continue;
+            }
+            let amount = amount_at(p, res);
+            if amount >= mem.min_amount && !cooling(p, res) {
+                found[k].push(crate::agents::memory::ResourceMemory {
+                    pos: p,
+                    resource: res,
+                    amount,
+                    seen_tick: tick,
+                    unreachable_until: 0,
+                });
+            }
+        }
+        for &hid in world.homes_on(p) {
+            if homes.len() < home_cap {
+                homes.push((hid, p));
+            }
+        }
+    };
     let max_r = world.dims.width.max(world.dims.height) as i32;
-    // Rings of increasing Chebyshev distance: nearest first, in a fixed order.
-    for radius in 0..=max_r {
-        let full = (0..3).all(|k| found[k].len() >= caps[k]) && homes_seen >= home_cap;
+    for r in 0..=max_r {
+        let full = (0..3).all(|k| found[k].len() >= caps[k]) && homes.len() >= home_cap;
         if full {
             break;
         }
-        for dy in -radius..=radius {
-            for dx in -radius..=radius {
-                if dx.abs().max(dy.abs()) != radius {
-                    continue;
-                }
-                let p = a.pos.offset(dx, dy);
-                if !world.contains(p) {
-                    continue;
-                }
-                let t = world.tile(p);
-                let pile = world.pile_at(p).map(|pl| pl.goods);
-                for res in Resource::ALL {
-                    let k = res.index();
-                    if found[k].len() >= caps[k] {
-                        continue;
-                    }
-                    let base = match res {
-                        Resource::Food => t.food,
-                        Resource::Wood => t.wood,
-                        Resource::Stone => t.stone,
-                    };
-                    let amount = base + pile.map_or(0.0, |g| g.get(res));
-                    if amount >= mem.min_amount {
-                        found[k].push(crate::agents::memory::ResourceMemory {
-                            pos: p,
-                            resource: res,
-                            amount,
-                            seen_tick: tick,
-                            unreachable_until: 0,
-                        });
-                    }
-                }
-                if homes_seen < home_cap {
-                    for &hid in world.homes_on(p) {
-                        a.memory.note_home(
-                            hid,
-                            p,
-                            home_sighting(world, hid, c.homes.comfortable_capacity),
-                            tick,
-                            home_cap,
-                        );
-                        homes_seen += 1;
-                    }
-                }
-            }
+        if r == 0 {
+            visit(a.pos, &mut found, &mut homes);
+            continue;
+        }
+        // Perimeter of the ring at distance r: top and bottom rows, then the
+        // left and right columns without their corners.
+        for dx in -r..=r {
+            visit(a.pos.offset(dx, -r), &mut found, &mut homes);
+            visit(a.pos.offset(dx, r), &mut found, &mut homes);
+        }
+        for dy in (-r + 1)..r {
+            visit(a.pos.offset(-r, dy), &mut found, &mut homes);
+            visit(a.pos.offset(r, dy), &mut found, &mut homes);
         }
     }
     let [food, wood, stone] = found;
@@ -2089,6 +2129,15 @@ fn observe_omniscient(a: &mut Agent, world: &World, c: &Config, tick: u64) {
     all.extend(wood);
     all.extend(stone);
     a.memory.set_resources(all);
+    for (hid, p) in homes {
+        a.memory.note_home(
+            hid,
+            p,
+            home_sighting(world, hid, c.homes.comfortable_capacity),
+            tick,
+            mem.home_slots as usize,
+        );
+    }
     if let Some(hid) = a.home {
         let h = &world.homes[hid as usize];
         a.memory.home_food_seen = h.stored().food;
@@ -2119,11 +2168,15 @@ fn insert_sorted(v: &mut Vec<u32>, id: u32) {
     }
 }
 
-/// Random baseline: a uniformly random valid option (Idle stays last resort).
+/// Random baseline: the options in a uniformly random order, with Idle moved
+/// last, so the agent takes the first other option whose target it can reach
+/// and only idles when none is reachable.
 fn random_choice(mut cands: Vec<Candidate>, rng: &mut Rng) -> Vec<Candidate> {
     if cands.len() > 1 {
         rng.shuffle(&mut cands);
     }
+    // Stable: keeps the shuffled order of everything else.
+    cands.sort_by_key(|c| c.kind == GoalKind::Idle);
     cands
 }
 
@@ -2238,5 +2291,162 @@ traits = [0.5, 0.5, 0.0, 0.5]
         assert!(sim.agents[i].home_plan.is_none(), "plan dropped to re-plan");
         assert_eq!(sim.agents[i].goal.kind, GoalKind::Idle);
         sim.check_invariants().expect("state stays consistent");
+    }
+
+    // ---- Baselines (review fixes) -------------------------------------
+
+    fn omniscient_config() -> Config {
+        let mut c = Config::default();
+        c.sim.agent_kind = AgentKind::Omniscient;
+        c
+    }
+
+    /// A tile holding several homes must not overflow the home pool and evict
+    /// the home the agent is standing on.
+    #[test]
+    fn omniscient_home_pool_keeps_the_nearest_homes() {
+        let toml = r#"
+name = "homes-on-shared-tiles"
+map = """
+......
+......
+"""
+[[home]]
+at = [1, 0]
+[[home]]
+at = [2, 0]
+[[home]]
+at = [2, 0]
+[[home]]
+at = [2, 0]
+[[agent]]
+at = [1, 0]
+home = 0
+"#;
+        let mut c = omniscient_config();
+        c.memory.home_slots = 2;
+        let sc = crate::scenario::Scenario::from_toml_str(toml).expect("parses");
+        let sim = sc.build(&c).expect("builds");
+        let homes: Vec<HomeId> = sim.agents[0].memory.homes.iter().map(|h| h.home).collect();
+        assert_eq!(homes.len(), 2, "pool size respected: {homes:?}");
+        assert!(homes.contains(&0), "kept the home it stands on: {homes:?}");
+    }
+
+    #[test]
+    fn omniscient_observation_is_deterministic_and_respects_pools() {
+        let mut sim = Simulation::new(1, omniscient_config());
+        sim.run(5 * 24);
+        let c = sim.config.clone();
+        for i in [0, sim.agents.len() / 2] {
+            let mut a = sim.agents[i].clone();
+            let mut b = sim.agents[i].clone();
+            observe_omniscient(&mut a, &sim.world, &c, sim.tick);
+            observe_omniscient(&mut b, &sim.world, &c, sim.tick);
+            assert_eq!(a.memory, b.memory, "same state, same memory");
+            for res in Resource::ALL {
+                assert!(a.memory.resource_count(res) <= AgentMemory::slots(res, &c.memory));
+            }
+            assert!(a.memory.homes.len() <= c.memory.home_slots as usize);
+            assert_eq!(a.memory.known_count() as usize, sim.world.dims.len());
+        }
+    }
+
+    /// A resource on cooldown after a failed route is skipped, so the pool
+    /// fills with other places instead of retrying the unreachable one.
+    #[test]
+    fn omniscient_skips_resources_on_unreachable_cooldown() {
+        let mut c = omniscient_config();
+        c.memory.food_slots = 1;
+        let mut sim = Simulation::new(1, c.clone());
+        sim.run(24);
+        let tick = sim.tick;
+        let mut a = sim.agents[0].clone();
+        observe_omniscient(&mut a, &sim.world, &c, tick);
+        let nearest = a
+            .memory
+            .resources
+            .iter()
+            .find(|m| m.resource == Resource::Food)
+            .unwrap()
+            .pos;
+        a.memory.mark_unreachable(nearest, tick + 100);
+        observe_omniscient(&mut a, &sim.world, &c, tick);
+        let food: Vec<_> = a
+            .memory
+            .resources
+            .iter()
+            .filter(|m| m.resource == Resource::Food)
+            .collect();
+        assert_eq!(food.len(), 1, "the pool is refilled");
+        assert_ne!(food[0].pos, nearest, "the unreachable place was skipped");
+        // After the cooldown it is offered again.
+        observe_omniscient(&mut a, &sim.world, &c, tick + 200);
+        let food: Vec<_> = a
+            .memory
+            .resources
+            .iter()
+            .filter(|m| m.resource == Resource::Food)
+            .collect();
+        assert_eq!(food[0].pos, nearest);
+    }
+
+    /// Omniscient agents score travel with true path levels, so a road makes
+    /// a trip look cheaper to them than to a normal agent who has not seen it.
+    #[test]
+    fn omniscient_travel_estimates_use_true_roads() {
+        let mut sim = Simulation::new(1, Config::default());
+        let a = sim.agents[0].clone();
+        let from = a.pos;
+        let to = Pos::new(from.x + 6, from.y);
+        for dx in 1..=6 {
+            let p = Pos::new(from.x + dx, from.y);
+            if sim.world.contains(p) && sim.world.tile(p).is_land() {
+                sim.world.tile_mut(p).path_level = crate::world::PathLevel::Road;
+            }
+        }
+        let normal = decision::travel_ticks(&a, &sim.ctx(0), from, to);
+        sim.config.sim.agent_kind = AgentKind::Omniscient;
+        let omni = decision::travel_ticks(&a, &sim.ctx(0), from, to);
+        assert!(
+            omni < normal,
+            "omniscient {omni} should see the road (normal {normal})"
+        );
+        assert_eq!(
+            decision::believed_path(&a, &sim.ctx(0), Pos::new(from.x + 1, from.y)),
+            sim.world.tile(Pos::new(from.x + 1, from.y)).path_level
+        );
+    }
+
+    #[test]
+    fn omniscient_runs_stay_on_land_and_snapshots_round_trip() {
+        let mut c = omniscient_config();
+        c.sim.check_invariants = true; // includes "agent in the water"
+        let mut sim = Simulation::new(1, c);
+        sim.run(10 * 24);
+        let mut resumed = Simulation::from_snapshot_json(&sim.snapshot_json()).expect("loads");
+        sim.run(48);
+        resumed.run(48);
+        assert_eq!(resumed.state_hash(), sim.state_hash());
+    }
+
+    #[test]
+    fn random_baseline_is_deterministic_and_idles_only_last() {
+        let mut c = Config::default();
+        c.sim.agent_kind = AgentKind::Random;
+        let mut a = Simulation::new(2, c.clone());
+        let mut b = Simulation::new(2, c);
+        a.run(5 * 24);
+        b.run(5 * 24);
+        assert_eq!(a.state_hash(), b.state_hash());
+
+        let cx = a.ctx(a.tick);
+        let cands = decision::evaluate(&a.agents[0], &cx);
+        assert!(cands.iter().any(|c| c.kind == GoalKind::Idle));
+        let mut rng = Rng::for_stream(9, Stream::Agents);
+        for _ in 0..20 {
+            let order = random_choice(cands.clone(), &mut rng);
+            assert_eq!(order.last().unwrap().kind, GoalKind::Idle, "Idle is last");
+            assert_eq!(order.len(), cands.len());
+        }
     }
 }

@@ -10,8 +10,10 @@
 # simulation/metrics.rs), or one of the derived measures computed by
 # crates/accrete-core/tests/benchmarks.rs:
 #   travel_per_food_run       tiles walked per unit of food gathered, whole run
-#   homes_near_fertile        share of occupied homes within 3 tiles of a tile
-#                             with fertility >= 0.3
+#   homes_near_fertile_lift   share of occupied homes within 2 tiles of a tile
+#                             with fertility >= 0.5, minus the same share for
+#                             all land tiles (0 = no better than random)
+# Boolean metrics (e.g. at_cap) count as 0 or 1.
 #   births_and_old_age_deaths 1 if both births and old-age deaths occurred
 
 seed = 1
@@ -26,14 +28,15 @@ pathology_oscillating = [0, 5]           # observed 0
 pathology_stuck = [0, 5]                 # observed 0
 pathology_starved_beside_food = [0, 0]   # observed 0
 pathology_idle = [0, 20]                 # observed 0
-travel_per_food_run = [0.0, 1.0]         # observed 0.48
-homes_near_fertile = [0.8, 1.0]          # observed 0.99
+travel_per_food_run = [0.2, 1.0]         # observed 0.48 (low = agents stopped moving)
+homes_near_fertile_lift = [0.03, 1.0]   # observed 0.10
 births_and_old_age_deaths = [1, 1]       # observed 1
+at_cap = [0, 0]                          # observed 0 (false)
 
 # Baselines (accrete.md Section 10, layer 4), run for `baseline_day` days:
 # normal agents must clearly beat random ones, and must not beat omniscient
 # ones by more than noise.
 [baselines]
 baseline_day = 60
-min_population_ratio_normal_over_random = 2.0
-max_population_ratio_normal_over_omniscient = 1.05
+min_population_ratio_normal_over_random = 2.0       # observed 3.3 (223 / 67)
+max_population_ratio_normal_over_omniscient = 1.05  # observed 0.93 (223 / 240)

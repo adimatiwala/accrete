@@ -204,7 +204,7 @@ pub fn material_plan(agent: &Agent, cx: &Ctx) -> (f32, f32, f32, f32) {
             .iter()
             .filter(|f| {
                 cx.world.contains(f.pos)
-                    && agent.memory.believed_path(f.pos) == crate::world::PathLevel::Trail
+                    && believed_path(agent, cx, f.pos) == crate::world::PathLevel::Trail
                     && {
                         let (b, cost) = road_value(agent, cx, f.pos);
                         b > cost
@@ -225,14 +225,29 @@ pub fn travel_ticks(agent: &Agent, cx: &Ctx, a: Pos, b: Pos) -> f32 {
     if a == b {
         return 0.0;
     }
-    let mp = line_cost_estimate(
-        cx.world,
-        &AgentBelief(&agent.memory),
-        a,
-        b,
-        &cx.config.movement,
-    );
-    mp as f32 / cx.config.movement.mp_per_tick as f32
+    let mc = &cx.config.movement;
+    let mp = if omniscient(cx.config) {
+        line_cost_estimate(cx.world, &crate::agents::pathfinding::Omniscient, a, b, mc)
+    } else {
+        line_cost_estimate(cx.world, &AgentBelief(&agent.memory), a, b, mc)
+    };
+    mp as f32 / mc.mp_per_tick as f32
+}
+
+/// Whether agents run as the omniscient baseline (evaluation only): they
+/// then plan, score and route with the true world instead of memory.
+pub fn omniscient(c: &crate::config::Config) -> bool {
+    c.sim.agent_kind == crate::config::AgentKind::Omniscient
+}
+
+/// The path level the agent believes `p` has: from its memory, or the true
+/// level for the omniscient baseline.
+pub fn believed_path(agent: &Agent, cx: &Ctx, p: Pos) -> crate::world::PathLevel {
+    if omniscient(cx.config) {
+        cx.world.tile(p).path_level
+    } else {
+        agent.memory.believed_path(p)
+    }
 }
 
 /// Desired carried reserve of food (units).
