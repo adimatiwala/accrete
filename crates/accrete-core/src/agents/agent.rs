@@ -264,6 +264,10 @@ pub struct Agent {
     /// never serialized or hashed.
     #[serde(skip)]
     pub frontier_cache: Option<FrontierCache>,
+    /// Derived memo of believed line costs (A.31). Not state: never
+    /// serialized or hashed.
+    #[serde(skip)]
+    pub line_memo: std::cell::RefCell<crate::agents::pathfinding::LineMemo>,
 }
 
 #[derive(Clone, Debug, PartialEq, Default)]

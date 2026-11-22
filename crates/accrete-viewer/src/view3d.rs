@@ -353,28 +353,11 @@ impl View3D {
                         };
                         let y = self.height_at(px, pz);
                         let foot = vec3(px, y, pz);
-                        land.cuboid(
-                            foot,
-                            vec3(0.08, 0.25 * s, 0.08),
-                            Color::from_rgba(92, 64, 40, 255),
-                        );
-                        land.cone(
-                            foot + vec3(0.0, 0.18 * s, 0.0),
-                            0.32 * s,
-                            0.75 * s,
-                            6,
-                            unit(hk),
-                            green,
-                        );
-                        if hk % 2 == 0 {
-                            land.cone(
-                                foot + vec3(0.0, 0.55 * s, 0.0),
-                                0.22 * s,
-                                0.55 * s,
-                                6,
-                                unit(hk) + 0.5,
-                                green,
-                            );
+                        // Light geometry: trees are most of the scene's vertices.
+                        land.cone(foot, 0.32 * s, 0.95 * s, 5, unit(hk), green);
+                        if hk % 3 == 0 {
+                            let top = foot + vec3(0.0, 0.45 * s, 0.0);
+                            land.cone(top, 0.22 * s, 0.6 * s, 5, unit(hk) + 0.5, green);
                         }
                     }
                 }

@@ -247,6 +247,7 @@ impl Simulation {
             pathology: PathologyState::default(),
             practiced_today: 0,
             frontier_cache: None,
+            line_memo: Default::default(),
             craft: Skill {
                 aptitude: craft_aptitude(self.world.seed, id, c),
                 practice: 0.0,
@@ -1206,6 +1207,7 @@ impl Simulation {
             },
             practiced_today: 0,
             frontier_cache: None,
+            line_memo: Default::default(),
             craft: Skill {
                 aptitude: inherited_craft_aptitude(parent_craft_aptitude, self.world.seed, id, &c),
                 practice: 0.0,

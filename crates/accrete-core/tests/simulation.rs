@@ -691,3 +691,34 @@ fn trade_and_sharing_happen_and_conserve_goods() {
     assert!(trades > 0, "no trades in 40 days");
     assert!(tips > 0, "no knowledge sharing in 40 days");
 }
+
+/// The specialised line-cost estimate (A.31) must equal the general one for
+/// every agent's real memory and many lines.
+#[test]
+fn fast_line_cost_matches_general() {
+    use accrete_core::agents::pathfinding::{
+        AgentBelief, line_cost_estimate, line_cost_estimate_memory,
+    };
+    let mut sim = Simulation::new(1, Config::default());
+    sim.run(60 * 24);
+    let w = sim.world.dims.width as i32;
+    let h = sim.world.dims.height as i32;
+    let mut checked = 0;
+    for (k, a) in sim.agents.iter().enumerate() {
+        for j in 0..40i32 {
+            let b = Pos::new((a.pos.x + 7 * j + k as i32) % w, (a.pos.y + 13 * j) % h);
+            let general = line_cost_estimate(
+                &sim.world,
+                &AgentBelief(&a.memory),
+                a.pos,
+                b,
+                &sim.config.movement,
+            );
+            let fast =
+                line_cost_estimate_memory(&sim.world, &a.memory, a.pos, b, &sim.config.movement);
+            assert_eq!(general, fast, "agent {} line {:?} -> {:?}", a.id, a.pos, b);
+            checked += 1;
+        }
+    }
+    assert!(checked > 1000);
+}
