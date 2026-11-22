@@ -396,6 +396,9 @@ fn main() {
                 .map(|p| sweep::parse_param(p))
                 .collect::<Result<Vec<_>, _>>()
                 .unwrap_or_else(|e| fail(&e));
+            if jobs == 0 {
+                fail("--jobs must be at least 1");
+            }
             sweep::run_sweep(
                 &config,
                 sweep::SweepArgs {

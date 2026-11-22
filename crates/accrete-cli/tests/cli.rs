@@ -225,3 +225,26 @@ fn jobs_zero_is_rejected() {
     assert_eq!(o.status.code(), Some(2));
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn sweeps_reject_jobs_zero_and_bad_points_before_running() {
+    let dir = tmp("sweepbad");
+    for args in [
+        vec![
+            "sweep",
+            "--param",
+            "resources.food_regrowth=0.1",
+            "--jobs",
+            "0",
+        ],
+        vec!["sweep", "--param", "resources.food_regrowth=x"],
+        vec!["sweep", "--param", "nope.key=1"],
+    ] {
+        let mut a = args.clone();
+        a.extend(["--days", "1", "-o", s(&dir)]);
+        let o = accrete(&a);
+        assert_eq!(o.status.code(), Some(2), "{args:?}");
+    }
+    assert!(!dir.join("sweep_runs.csv").exists(), "nothing ran");
+    let _ = std::fs::remove_dir_all(&dir);
+}
