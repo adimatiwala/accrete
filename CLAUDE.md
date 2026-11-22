@@ -28,7 +28,7 @@ cargo fmt --all
 cargo clippy -p accrete-core -p accrete-cli -p accrete-viz --all-targets -- -D warnings   # exactly what CI runs
 ```
 
-CI (`.github/workflows/ci.yml`) runs on pull requests, on pushes to `main`, and when started manually from the Actions tab (any branch). Feature branches are tested through their PR, and a newer push to a PR cancels its older run. CI runs the same steps on `macos-latest` and `windows-latest`:
+CI (`.github/workflows/ci.yml`) runs on pull requests (including when a PR's base changes), on pushes to `main`, on merge-queue checks, and when started manually from the Actions tab (any branch). Feature branches are tested through their PR, and a newer run for a PR cancels its older one. Runs for `main` and manual runs are never cancelled. CI runs the same steps on `macos-latest` and `windows-latest`:
 1. fmt check
 2. the clippy command above
 3. release tests for `accrete-core`, `accrete-cli` and `accrete-viz`
@@ -42,7 +42,9 @@ CI (`.github/workflows/ci.yml`) runs on pull requests, on pushes to `main`, and 
 - **`accrete-viz` or `accrete-viewer` only:** step 4 is skipped.
 - **Anything else,** including core, `configs/`, `tests/`, the toolchain, dependencies, `.gitattributes`, CI files, and **any path the script doesn't recognise**: everything runs.
 
-Pushes to `main` and manual runs always run everything. The `ci-result` job always reports, and treats a skipped Rust job as a pass, so it is the one check to require in branch protection. When you add a new crate or a new kind of file, give it a category in the script; otherwise it falls back to running everything. Try the script locally with `bash .github/scripts/ci-changes.sh origin/main HEAD`.
+Pushes to `main` and manual runs always run everything. The `ci-result` job always reports, and treats a skipped Rust job as a pass, so it is the one check to require in branch protection. When you add a new crate or a new kind of file, give it a category in the script; otherwise it falls back to running everything.
+- **The filter is fail-safe:** everything runs if the base can't be resolved, if `git diff` fails, if the diff is empty, or if the step's outputs are missing. Renames count as both their source and their destination.
+- **Testing it:** try the script locally with `bash .github/scripts/ci-changes.sh origin/main HEAD`. Its self-test, `bash .github/scripts/test-ci-changes.sh`, runs in CI before every classification; add a case there whenever you change a category.
 
 Running the simulation:
 
