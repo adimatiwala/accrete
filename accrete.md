@@ -898,7 +898,7 @@ Paste the following into Codex once the repository is open:
 
 This appendix records what was built from this specification, in the order it was built. It also records every place where the specification left a choice open (or was found not to work as written), what was chosen, and why. The base is commit `e5a15ce` (this document and a README only). All numbers below are defaults in `configs/default.toml`, which a test keeps identical to `Config::default()`.
 
-**Status against the plan:** Week 1 complete. Week 2 complete. Week 3 complete except for the Day 5 experiment suite. Week 4: droughts (random and scripted), the metrics export, snapshots and branching, route disruptions, the random and omniscient baselines, and the behavioural benchmarks are complete. Not yet built: the viewer's experiment controls, and the Week 3 Day 5 experiment suite.
+**Status against the plan:** Week 1 complete. Week 2 complete. Week 3 complete except for the Day 5 experiment suite. Week 4: droughts (random and scripted), the metrics export, snapshots and branching, route disruptions, the random and omniscient baselines, the behavioural benchmarks, and the viewer's experiment controls are complete. Not yet built: the Week 3 Day 5 experiment suite.
 
 ### A.1 Repository and tooling
 
@@ -1235,3 +1235,22 @@ Normal agents are far better than random, so the decision logic works. Limited s
 * **Trapped agents wade out.** An agent inside a blocked *area* (not at its edge) could not move until the flood ended, and kept re-trying routes because its 8 failed-target slots overflowed. Now a blocked tile can be entered from another blocked tile at `WADE_FACTOR` (4) times its cost, in both A\* and movement, so agents wade out but nobody wades in. In the flooded-home test, 3 of the 4 agents caught inside left within two days; the fourth chose to rest where it stood. No golden hash changed, and a 200-day run of seed 1 took the same time.
 * **Dedicated disruption memory.** Disruptions used to share the 32 changed-tile slots with trails and roads, so a large flood could push path memories out and agents could forget blocked tiles for lack of room. Disruptions now have their own pool (`memory.disruption_slots = 1024`), kept sorted by tile for binary-search lookups. When full, the entry farthest from the agent is replaced. Trails and roads stay in the 32-slot changed pool. A radius-15 flood (~519 tiles) fits whole. `SNAPSHOT_FORMAT` is 3. Golden hashes were re-recorded; a 200-day run of seed 1 matched the previous build on every metric and the death log, apart from the new memory layout.
 * **New tests:** floods do not crowd out roads (unit and whole-world); farthest-first eviction; equal-distance ties; the pool stays sorted; newborns inherit disruptions; re-seeing a restored tile clears the belief; agents hold more than 32 disruption tiles during a large flood; after a busiest-tile flood ends, at least one agent still remembers a blocked tile.
+### A.16 Viewer experiment controls (Week 4 Day 5)
+
+The spec's "load snapshot, select drought or route disruption, branch and compare", in the interactive viewer, all keyboard-driven:
+
+| Key or flag | Action |
+|---|---|
+| `K` / `L` | Save a snapshot to `results/viewer_seed…_day…_t….snap.json`; reload the last one (a rewind). |
+| `--load FILE` | Start from a snapshot. |
+| `I` | Cycle intervention presets: a drought around the selected tile (radius 16, 60 days, −60 % regrowth), cut the 20 busiest routes (20 days), flood the area round the selected tile (radius 3, 30 days, impassable), or halve food regrowth. |
+| `B` | Branch from now. An exact copy (through a snapshot round trip) gets the intervention, and both simulations then step in lockstep. |
+| `V` / `X` | Switch the branch on screen; drop the branch. |
+| `--intervene N` (`--view-b`) | Branch at start, for headless screenshots. |
+
+**Decisions:**
+* **Presets change world conditions only,** through the same config paths as `accrete branch` (scripted droughts, `[[disruption.scripted]]`, regrowth rate), starting on the branch day. Interventions centre on the selected tile, or on the map centre when nothing is selected.
+* **What's shown:** the banner names the branch, the preset and which side is on screen; the chart overlays the other branch's population in orange with the live difference; disrupted tiles are drawn in red (blocked) or orange (slowed).
+* **Speed:** while branched, the per-frame step budget is halved, because two simulations step per tick.
+
+**Verification:** headless screenshots after loading a day-60 snapshot of seed 1 and branching with `--intervene 1` (cut routes, viewing the intervention) and `--intervene 0` (drought, viewing the control) show the banner, the red disrupted tiles and the overlaid population line. The viewer only calls `Simulation::step`, `snapshot_json` and `set_config`, all of which are tested in core.

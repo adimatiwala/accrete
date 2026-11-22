@@ -11,7 +11,7 @@ Where to look:
 - **`docs/DESIGN.md`**: a module-by-module map of `accrete-core`, plus the tick pipeline.
 - **`README.md`**: a quick start and the headline results table.
 
-**Status:** Weeks 1–3 are built, and Week 4's simulation work is complete: snapshots and branching, droughts and route disruptions, the random and omniscient baselines, and the behavioural benchmarks. The viewer's experiment controls and the Week 3 Day 5 experiment suite are **not built yet** (Appendix A, "Status against the plan" and A.10).
+**Status:** Weeks 1–3 are built, and Week 4's simulation work is complete: snapshots and branching, droughts and route disruptions, the random and omniscient baselines, the behavioural benchmarks, and the viewer's experiment controls. The Week 3 Day 5 experiment suite is **not built yet** (Appendix A, "Status against the plan" and A.10).
 
 ## Commands
 
@@ -68,7 +68,8 @@ cargo run --release -p accrete-cli -- branch --load results/seed1_day100.snap.js
 - **`--check`** runs the conservation and bounds checks every tick. It's slow but catches ledger bugs.
 - **Baselines:** `--set sim.agent_kind=random` or `--set sim.agent_kind=omniscient`, for evaluation only. Random agents pick a valid option at random; omniscient agents use the normal decision logic with perfect knowledge (whole-map terrain, the nearest resources of each type, true path levels and route costs) within the same memory limits, and ignore `memory.enabled`. Wherever decision code reads a belief about the world, go through `decision::omniscient` / `decision::believed_path` (or choose the `Omniscient` belief), so the baseline stays consistent.
 - **Benchmarks:** `tests/benchmarks/primary_seed.toml` holds accepted ranges for seed 1 at day 100, plus the baseline ordering. `cargo test --release -p accrete-core --test benchmarks -- --nocapture` prints every value against its range. A range is changed only deliberately, with the reason recorded in Appendix A.
-- **Viewer flags:** `--seed`, `--day`, `--play`, `--select <agent>`, `--config <file>`, and `--screenshot <png>` for headless verification.
+- **Viewer flags:** `--seed`, `--day`, `--play`, `--select <agent>`, `--config <file>`, `--load <snapshot>`, `--intervene <preset>` (branch at start; `--view-b` shows the intervention), and `--screenshot <png>` for headless verification.
+- **Viewer experiment keys:** `K` save a snapshot to `results/`, `L` reload it, `I` cycle intervention presets, `B` branch (control and intervention run in lockstep), `V` switch the branch on screen, `X` drop the branch. Presets live in `INTERVENTIONS` / `intervention_config` in `accrete-viewer/src/main.rs` and change world conditions only.
 - **Seeds** can be decimal, `0x…` hex, or free text, which is hashed.
 - **`results/`** is gitignored.
 
