@@ -285,6 +285,32 @@ impl PartialEq for LineMemo {
     }
 }
 
+/// The memo behind a lock, so an agent can be scored on a worker thread
+/// (A.32). Each agent's memo is only ever used by the thread scoring that
+/// agent, so the lock is never contended. Cloning gives a fresh copy.
+#[derive(Debug, Default)]
+pub struct MemoCell(std::sync::Mutex<LineMemo>);
+
+impl MemoCell {
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, LineMemo> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+impl Clone for MemoCell {
+    fn clone(&self) -> Self {
+        Self(std::sync::Mutex::new(self.lock().clone()))
+    }
+}
+
+impl PartialEq for MemoCell {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
 const MEMO_SLOTS: usize = 128;
 const MEMO_EMPTY: Pos = Pos {
     x: i32::MIN,

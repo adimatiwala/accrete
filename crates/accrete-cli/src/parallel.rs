@@ -22,6 +22,8 @@ pub fn map_ordered<T: Sync, R: Send>(
     if jobs <= 1 || items.len() <= 1 {
         return items.iter().map(&f).collect();
     }
+    // Seeds already run in parallel: one thread per simulation (A.32).
+    accrete_core::simulation::parallel::set_default_threads(1);
     let next = AtomicUsize::new(0);
     let stop = AtomicBool::new(false);
     let failure: Mutex<Option<(usize, String)>> = Mutex::new(None);

@@ -310,7 +310,7 @@ pub fn travel_ticks(agent: &Agent, cx: &Ctx, a: Pos, b: Pos) -> f32 {
     } else {
         agent
             .line_memo
-            .borrow_mut()
+            .lock()
             .line_cost(cx.tick, cx.world, &agent.memory, a, b, mc)
     };
     mp as f32 / mc.mp_per_tick as f32

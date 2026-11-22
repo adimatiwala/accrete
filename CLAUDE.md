@@ -130,7 +130,7 @@ Cross-cutting ideas that take several files to see:
 1. **Determinism, identical across platforms.** In `accrete-core`:
    - **No banned math.** No `std` transcendentals (`sin`, `exp`, `powf`, `powi`, …), no `mul_add`, no `DefaultHasher`. `clippy.toml` bans them, and CI fails on them. Only `+ - * /`, `sqrt`, comparisons, rounding and `as` casts are allowed.
    - **No unordered iteration** that affects state: use `Vec` in a fixed order or `BTreeMap`, never `HashMap` or `HashSet` traversal.
-   - **No parallelism inside one simulation.** Parallel runs of separate seeds are fine.
+   - **Parallelism inside one simulation only where it cannot change results.** The one parallel step is scoring proposals (`propose_prepare`, A.32): it reads a frozen world and one agent, and `simulation::parallel::map_indexed` returns results in agent order. Everything that mutates state, draws random numbers or reads another agent's choice stays sequential. `thread_count_does_not_change_results` guards this; `ACCRETE_THREADS=1` forces a sequential run. Parallel runs of separate seeds are fine (the CLI then uses one thread per simulation).
    - **Floats:** sort with `total_cmp`, and add up in a fixed order.
    - **Randomness** comes only from the named `rng::Stream`s. New randomness uses an existing stream, or **appends** a new id. Never renumber streams: the id is part of the reproducibility contract. Scripted interventions must never draw from `weather`.
    - **No CPU-specific flags or fast-math** anywhere in the workspace.

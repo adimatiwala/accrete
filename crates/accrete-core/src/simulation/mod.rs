@@ -6,6 +6,7 @@ pub mod engine;
 pub mod events;
 pub mod infrastructure;
 pub mod metrics;
+pub mod parallel;
 pub mod settlement;
 pub mod snapshot;
 pub mod social;
