@@ -2320,6 +2320,22 @@ impl Simulation {
         m.moran_sociability = moran(|a| a.traits.sociability);
         m.moran_diligence = moran(|a| a.traits.diligence);
         m.tools_crafted = self.today.tools_crafted as f32;
+        m.trait_copies = self.today.trait_copies;
+        {
+            let adults: Vec<&Agent> = self
+                .agents
+                .iter()
+                .filter(|a| !a.is_juvenile(&self.rates))
+                .collect();
+            let n = adults.len().max(1) as f64;
+            let mean = |f: fn(&Agent) -> f32| {
+                (adults.iter().map(|a| f64::from(f(a))).sum::<f64>() / n) as f32
+            };
+            m.mean_curiosity = mean(|a| a.traits.curiosity);
+            m.mean_caution = mean(|a| a.traits.caution);
+            m.mean_sociability = mean(|a| a.traits.sociability);
+            m.mean_diligence = mean(|a| a.traits.diligence);
+        }
         let adults: Vec<&Agent> = self
             .agents
             .iter()

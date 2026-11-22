@@ -35,6 +35,7 @@ pub struct Config {
     pub social: SocialConfig,
     pub infrastructure: InfrastructureConfig,
     pub tools: ToolsConfig,
+    pub culture: CultureConfig,
     pub disruption: DisruptionConfig,
     pub sim: SimConfig,
 }
@@ -98,6 +99,7 @@ impl Config {
             ("trails.decay", self.trails.decay),
             ("tools.price_learning", self.tools.price_learning),
             ("tools.price_gossip", self.tools.price_gossip),
+            ("culture.rate", self.culture.rate),
             ("weather.daily_chance", self.weather.daily_chance),
             ("weather.severity_min", self.weather.severity_min),
             ("weather.severity_max", self.weather.severity_max),
@@ -995,6 +997,29 @@ impl Default for SocialConfig {
             material_value: 0.6,
             tool_value: 2.0,
             surplus_value: 0.05,
+        }
+    }
+}
+
+/// Payoff-biased social learning (A.27).
+///
+/// When two agents talk (the same meeting in which they share where food
+/// is), each mentions how well foraging has been going: its experienced
+/// return. A listener whose partner does better shifts each personality
+/// trait a little toward the partner's: `rate × min(1, payoff gap / own
+/// return) × (0.5 + 0.5 × sociability)` of the way. Inheritance is unchanged.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CultureConfig {
+    pub enabled: bool,
+    pub rate: f32,
+}
+
+impl Default for CultureConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            rate: 0.05,
         }
     }
 }
