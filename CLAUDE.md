@@ -28,7 +28,7 @@ cargo fmt --all
 cargo clippy -p accrete-core -p accrete-cli -p accrete-viz --all-targets -- -D warnings   # exactly what CI runs
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same steps on `macos-latest` and `windows-latest`:
+CI (`.github/workflows/ci.yml`) runs on pull requests, on pushes to `main`, and when started manually from the Actions tab (any branch). Feature branches are tested through their PR, and a newer push to a PR cancels its older run. CI runs the same steps on `macos-latest` and `windows-latest`:
 1. fmt check
 2. the clippy command above
 3. release tests for `accrete-core`, `accrete-cli` and `accrete-viz`

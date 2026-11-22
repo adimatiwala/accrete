@@ -8,10 +8,19 @@ name: ci
 # front-end-only changes skip the slow debug pass of accrete-core. Pushes to
 # main and manual runs always run everything. `ci-result` always reports, so
 # it is the one check to require in branch protection.
+#
+# Triggers: pull requests, pushes to main, and manual runs (Actions tab, any
+# branch). Feature branches are tested through their PR, so a branch with an
+# open PR is not built twice; a newer push to a PR cancels its older run.
 on:
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   changes:
@@ -28,17 +37,12 @@ jobs:
         id: filter
         env:
           EVENT: ${{ github.event_name }}
-          REF: ${{ github.ref }}
           PR_BASE: ${{ github.event.pull_request.base.sha }}
         run: |
+          # PRs are filtered against their base; pushes to main and manual
+          # runs always run everything.
           case "$EVENT" in
             pull_request) base="$PR_BASE" ;;
-            push)
-              if [ "$REF" = refs/heads/main ]; then
-                base=""   # main always runs everything
-              else
-                base=$(git merge-base origin/main HEAD 2>/dev/null || true)
-              fi ;;
             *) base="" ;;
           esac
           echo "Comparing ${base:-<none: run everything>}..HEAD"
