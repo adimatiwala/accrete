@@ -33,6 +33,7 @@ pub struct DayCounters {
     pub forage_distance_n: u64,
     /// Sum of distances (tiles) of today's home moves.
     pub home_move_distance_sum: f64,
+    pub tools_crafted: f64,
     pub goal_ticks: [u64; GoalKind::COUNT],
 }
 
@@ -121,6 +122,14 @@ pub struct DailyMetrics {
     pub moran_caution: f32,
     pub moran_sociability: f32,
     pub moran_diligence: f32,
+    /// Tools (A.26): crafted today; share of adults holding a tool; share of
+    /// adults whose top skill is crafting; mean and coefficient of variation
+    /// of believed prices (food per tool) among adults who hold a belief.
+    pub tools_crafted: f32,
+    pub tool_holders_share: f32,
+    pub crafter_share: f32,
+    pub tool_price_mean: f32,
+    pub tool_price_cv: f32,
     pub settlement_candidates: u32,
     pub hamlets: u32,
     pub villages: u32,
@@ -202,6 +211,11 @@ impl DailyMetrics {
             "moran_caution",
             "moran_sociability",
             "moran_diligence",
+            "tools_crafted",
+            "tool_holders_share",
+            "crafter_share",
+            "tool_price_mean",
+            "tool_price_cv",
             "settlement_candidates",
             "hamlets",
             "villages",
@@ -288,6 +302,11 @@ impl DailyMetrics {
             format!("{:.4}", self.moran_caution),
             format!("{:.4}", self.moran_sociability),
             format!("{:.4}", self.moran_diligence),
+            format!("{:.2}", self.tools_crafted),
+            format!("{:.4}", self.tool_holders_share),
+            format!("{:.4}", self.crafter_share),
+            format!("{:.3}", self.tool_price_mean),
+            format!("{:.4}", self.tool_price_cv),
             self.settlement_candidates.to_string(),
             self.hamlets.to_string(),
             self.villages.to_string(),

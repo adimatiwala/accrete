@@ -14,10 +14,21 @@ pub enum Resource {
     Food,
     Wood,
     Stone,
+    /// A crafted, durable good (A.26). Never on tiles; only carried, stored,
+    /// traded, and worn out by use.
+    Tools,
 }
 
 impl Resource {
+    /// The natural resources: what tiles hold, regrow, and agents remember.
     pub const ALL: [Resource; 3] = [Resource::Food, Resource::Wood, Resource::Stone];
+    /// Every good an inventory can hold (natural resources plus tools).
+    pub const GOODS: [Resource; 4] = [
+        Resource::Food,
+        Resource::Wood,
+        Resource::Stone,
+        Resource::Tools,
+    ];
 
     pub fn index(self) -> usize {
         self as usize
@@ -28,6 +39,7 @@ impl Resource {
             Resource::Food => "food",
             Resource::Wood => "wood",
             Resource::Stone => "stone",
+            Resource::Tools => "tools",
         }
     }
 
@@ -36,6 +48,7 @@ impl Resource {
             Resource::Food => c.food_weight,
             Resource::Wood => c.wood_weight,
             Resource::Stone => c.stone_weight,
+            Resource::Tools => c.tools_weight,
         }
     }
 }
@@ -45,6 +58,8 @@ pub struct Inventory {
     pub food: f32,
     pub wood: f32,
     pub stone: f32,
+    #[serde(default)]
+    pub tools: f32,
 }
 
 impl Inventory {
@@ -52,6 +67,7 @@ impl Inventory {
         food: 0.0,
         wood: 0.0,
         stone: 0.0,
+        tools: 0.0,
     };
 
     #[inline]
@@ -60,6 +76,7 @@ impl Inventory {
             Resource::Food => self.food,
             Resource::Wood => self.wood,
             Resource::Stone => self.stone,
+            Resource::Tools => self.tools,
         }
     }
 
@@ -69,11 +86,15 @@ impl Inventory {
             Resource::Food => &mut self.food,
             Resource::Wood => &mut self.wood,
             Resource::Stone => &mut self.stone,
+            Resource::Tools => &mut self.tools,
         }
     }
 
     pub fn weight(&self, c: &InventoryConfig) -> f32 {
-        self.food * c.food_weight + self.wood * c.wood_weight + self.stone * c.stone_weight
+        self.food * c.food_weight
+            + self.wood * c.wood_weight
+            + self.stone * c.stone_weight
+            + self.tools * c.tools_weight
     }
 
     /// Units of `r` that fit in the remaining capacity.
@@ -82,7 +103,7 @@ impl Inventory {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.food <= 0.0 && self.wood <= 0.0 && self.stone <= 0.0
+        self.food <= 0.0 && self.wood <= 0.0 && self.stone <= 0.0 && self.tools <= 0.0
     }
 
     /// Remove up to `amount` of `r`; returns the amount actually removed.
@@ -125,10 +146,11 @@ impl Inventory {
         self.food += o.food;
         self.wood += o.wood;
         self.stone += o.stone;
+        self.tools += o.tools;
     }
 
     pub fn is_valid(&self) -> bool {
-        Resource::ALL
+        Resource::GOODS
             .iter()
             .all(|&r| self.get(r).is_finite() && self.get(r) >= 0.0)
     }
@@ -139,6 +161,7 @@ impl StableHash for Inventory {
         h.f32(self.food);
         h.f32(self.wood);
         h.f32(self.stone);
+        h.f32(self.tools);
     }
 }
 

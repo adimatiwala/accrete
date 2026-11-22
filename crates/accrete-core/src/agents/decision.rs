@@ -217,7 +217,39 @@ pub fn material_plan(agent: &Agent, cx: &Ctx) -> (f32, f32, f32, f32) {
         wood_keep += ic.road_wood * prospects;
         stone_keep += ic.road_stone * prospects;
     }
+    if wants_to_craft(agent, cx) {
+        wood += c.tools.craft_wood;
+        stone += c.tools.craft_stone;
+        wood_keep += c.tools.craft_wood;
+        stone_keep += c.tools.craft_stone;
+    }
     (wood, stone, wood_keep, stone_keep)
+}
+
+/// The agent's believed exchange rate, food per tool: learned from its own
+/// trades and from conversation, else the prior.
+pub fn tool_price_belief(agent: &Agent, cx: &Ctx) -> f32 {
+    if agent.memory.tool_price > 0.0 {
+        agent.memory.tool_price
+    } else {
+        cx.config.tools.price_prior
+    }
+}
+
+/// Tools one crafting batch yields for this agent (its crafting skill).
+pub fn craft_output(agent: &Agent, cx: &Ctx) -> f32 {
+    cx.config.tools.output_per_batch * agent.craft.level()
+}
+
+/// An adult crafts when it lacks a tool, or when it believes a batch would
+/// fetch more than `surplus_threshold_food` in exchange. Skilled crafters and
+/// high believed prices make crafting for others worthwhile.
+pub fn wants_to_craft(agent: &Agent, cx: &Ctx) -> bool {
+    let tc = &cx.config.tools;
+    tc.enabled
+        && !agent.is_juvenile(cx.rates)
+        && (agent.inventory.tools < tc.wanted
+            || tool_price_belief(agent, cx) * craft_output(agent, cx) >= tc.surplus_threshold_food)
 }
 
 /// Estimated ticks to walk from `a` to `b` along a straight line, at believed costs.
@@ -542,6 +574,36 @@ pub fn evaluate(agent: &Agent, cx: &Ctx) -> Vec<Candidate> {
                 .term("home trip", -tc * back)
                 .eta(tt + work)
         }));
+    }
+
+    // --- Craft tools (A.26) -------------------------------------------------
+    let tcfg = &c.tools;
+    if tcfg.enabled
+        && !juvenile
+        && wood >= tcfg.craft_wood
+        && stone >= tcfg.craft_stone
+        && hunger < eat_thr
+        && wants_to_craft(agent, cx)
+    {
+        let target = home.map_or(agent.pos, |h| h.pos);
+        let output = craft_output(agent, cx);
+        let own = (tcfg.wanted - agent.inventory.tools).max(0.0).min(output);
+        let surplus = (output - own).max(0.0);
+        let price = tool_price_belief(agent, cx);
+        let tt = travel(target);
+        out.push(
+            Candidate::new(GoalKind::Craft, target)
+                .term("own tool", d.tool_weight * own)
+                .term(
+                    "tools to trade",
+                    d.tool_trade_weight
+                        * (price * surplus / reserve).min(1.0)
+                        * (0.5 + 0.5 * t.diligence),
+                )
+                .term("travel", -tc * tt)
+                .term("work", -tc * tcfg.craft_ticks as f32)
+                .eta(tt + tcfg.craft_ticks as f32),
+        );
     }
 
     // --- Improve the trail underfoot into a road ---------------------------

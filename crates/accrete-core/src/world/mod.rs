@@ -335,6 +335,7 @@ impl World {
             Resource::Food => t.food,
             Resource::Wood => t.wood,
             Resource::Stone => t.stone,
+            Resource::Tools => 0.0,
         };
         base + self.pile_at(p).map_or(0.0, |pl| pl.goods.get(r))
     }
@@ -381,7 +382,7 @@ impl World {
     /// Total resources lying in the world (tiles, piles, and chests).
     pub fn resource_totals(&self) -> Inventory {
         // f64 accumulation in fixed tile order, for precise conservation checks.
-        let (mut f, mut w, mut s) = (0.0f64, 0.0f64, 0.0f64);
+        let (mut f, mut w, mut s, mut k) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
         for t in &self.tiles {
             f += f64::from(t.food);
             w += f64::from(t.wood);
@@ -391,18 +392,21 @@ impl World {
             f += f64::from(p.goods.food);
             w += f64::from(p.goods.wood);
             s += f64::from(p.goods.stone);
+            k += f64::from(p.goods.tools);
         }
         for home in &self.homes {
             for c in &home.chests {
                 f += f64::from(c.food);
                 w += f64::from(c.wood);
                 s += f64::from(c.stone);
+                k += f64::from(c.tools);
             }
         }
         Inventory {
             food: f as f32,
             wood: w as f32,
             stone: s as f32,
+            tools: k as f32,
         }
     }
 }

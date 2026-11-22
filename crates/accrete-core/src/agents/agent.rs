@@ -64,10 +64,11 @@ pub enum GoalKind {
     Reproduce,
     ImproveTrail,
     ImproveShelter,
+    Craft,
 }
 
 impl GoalKind {
-    pub const COUNT: usize = 14;
+    pub const COUNT: usize = 15;
     pub const ALL: [GoalKind; GoalKind::COUNT] = [
         GoalKind::Idle,
         GoalKind::Explore,
@@ -83,6 +84,7 @@ impl GoalKind {
         GoalKind::Reproduce,
         GoalKind::ImproveTrail,
         GoalKind::ImproveShelter,
+        GoalKind::Craft,
     ];
 
     pub fn name(self) -> &'static str {
@@ -101,6 +103,7 @@ impl GoalKind {
             GoalKind::Reproduce => "reproduce",
             GoalKind::ImproveTrail => "improve-trail",
             GoalKind::ImproveShelter => "improve-shelter",
+            GoalKind::Craft => "craft",
         }
     }
 
@@ -118,6 +121,7 @@ impl GoalKind {
             Resource::Food => GoalKind::GatherFood,
             Resource::Wood => GoalKind::GatherWood,
             Resource::Stone => GoalKind::GatherStone,
+            Resource::Tools => GoalKind::Craft,
         }
     }
 }
@@ -209,6 +213,7 @@ pub struct AgentStats {
     pub roads_built: u32,
     pub shelters_built: u32,
     pub tips_received: u32,
+    pub tools_crafted: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -230,6 +235,8 @@ pub struct Agent {
     pub traits: Traits,
     /// Indexed by `Resource::index()`.
     pub skills: [Skill; 3],
+    /// Crafting skill (A.26): aptitude plus practice, like gathering skills.
+    pub craft: Skill,
     pub goal: Goal,
     pub route: Option<Route>,
     pub home: Option<HomeId>,
@@ -307,6 +314,7 @@ impl Agent {
             Resource::Food => c.skills.base_food,
             Resource::Wood => c.skills.base_wood,
             Resource::Stone => c.skills.base_stone,
+            Resource::Tools => return 0.0,
         };
         let juvenile = if self.is_juvenile(r) {
             c.life.juvenile_gather_factor
@@ -379,6 +387,8 @@ impl StableHash for Agent {
         h.f32(self.frailty_crowding);
         h.u8(self.practiced_today);
         h.f32(self.forage_rate);
+        h.f32(self.craft.aptitude);
+        h.f32(self.craft.practice);
         h.f32(self.forage_today_food);
         h.u32(self.forage_today_ticks);
         h.u64(self.last_share_tick);
