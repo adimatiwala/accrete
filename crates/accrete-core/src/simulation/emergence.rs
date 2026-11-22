@@ -69,7 +69,8 @@ pub fn depletion_ratio(world: &World) -> f32 {
 /// individuals specialise in different resources. Adults with almost no
 /// practice are skipped.
 pub fn specialization(agents: &[Agent], rates: &TickRates) -> f32 {
-    let vecs: Vec<[f32; 3]> = agents
+    // Practice vectors over food, wood, stone and crafting (A.26).
+    let vecs: Vec<[f32; 4]> = agents
         .iter()
         .filter(|a| !a.is_juvenile(rates))
         .map(|a| {
@@ -77,6 +78,7 @@ pub fn specialization(agents: &[Agent], rates: &TickRates) -> f32 {
                 a.skills[0].practice,
                 a.skills[1].practice,
                 a.skills[2].practice,
+                a.craft.practice,
             ]
         })
         .filter(|v| v.iter().sum::<f32>() >= 0.02)
@@ -84,17 +86,17 @@ pub fn specialization(agents: &[Agent], rates: &TickRates) -> f32 {
     if vecs.len() < 2 {
         return 0.0;
     }
-    let mut mean = [0.0f32; 3];
+    let mut mean = [0.0f32; 4];
     for v in &vecs {
-        for k in 0..3 {
+        for k in 0..4 {
             mean[k] += v[k] / vecs.len() as f32;
         }
     }
-    let norm = |v: &[f32; 3]| (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    let norm = |v: &[f32; 4]| (v.iter().map(|x| x * x).sum::<f32>()).sqrt();
     let nm = norm(&mean).max(1e-9);
     let mut sim = 0.0f64;
     for v in &vecs {
-        let dot = v[0] * mean[0] + v[1] * mean[1] + v[2] * mean[2];
+        let dot: f32 = v.iter().zip(&mean).map(|(a, b)| a * b).sum();
         sim += f64::from(dot / (norm(v).max(1e-9) * nm));
     }
     (1.0 - sim / vecs.len() as f64) as f32

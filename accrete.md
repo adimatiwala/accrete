@@ -1550,3 +1550,46 @@ New suite and sweep outcomes (`experiments::OUTCOMES`):
 4. **Noise limits some metrics.** Foraging radius (0.74), largest-cluster share (0.66) and Moran's I (0.49) are dominated by seed noise at 2 seeds; their indices are not interpreted.
 
 **Next:** N ≥ 128 with 5 seeds for the headline outcomes, so first-order indices separate from interactions; and the E1 regrowth × land-threshold grid to map the transition.
+
+### A.26 Tools and crafting: a production chain with learned prices (research program §7.1, H2)
+
+**Mechanism** (all individual motives, default off: `tools.enabled = false`):
+
+| Piece | Rule |
+|---|---|
+| **Good** | `Resource::Tools`: a durable, crafted good with weight 2. It lives only in inventories, chests and piles, never on tiles. `Resource::ALL` stays the three natural resources; `Resource::GOODS` adds tools for inventory-level code. |
+| **Use** | A tool in hand multiplies the gathering rate of every resource by `gather_bonus` (1.5) and wears `1 / durability_ticks` (1/48) per productive gathering tick. Wear is recorded as `construction` in the ledger's tools column. |
+| **Craft** | `GoalKind::Craft` at home (or where a homeless agent stands) turns `craft_wood` (2) + `craft_stone` (1) into `output_per_batch × crafting skill` tools over `craft_ticks` (4). Crafted tools are recorded as `regrown`. The crafting skill is aptitude plus practice, like gathering: practice rises with crafting and decays when unused. |
+| **Motive to craft** | An adult crafts when it lacks a tool, or when it believes one batch would fetch at least `surplus_threshold_food` (4) in exchange. The value of tools to trade is the believed price × surplus / reserve. Inputs come into the material plan only then. |
+| **Prices** | Each agent keeps `memory.tool_price` (food per tool). It updates from its own tool-for-food trades (learning rate 0.3) and moves toward a conversation partner's belief (gossip 0.2). Before any experience it assumes the prior (3). Barter values tools by need (`social.tool_value` = 2 per tool below the one wanted). |
+
+**Decisions:**
+* **Aptitude from a stateless hash.** A founder's crafting aptitude comes from `hash::mix_words(seed, id, …)`, not a new RNG draw, which would shift every later founder draw and change runs with tools off.
+* **Inertness proven.** With tools disabled, all 87 pre-existing metric columns are bit-identical to the previous build over 120 days (seed 1). Golden hashes changed only through the config digest and new hashed fields: inventory tools, crafting skill, price belief. `SNAPSHOT_FORMAT` 5.
+* **Prices from local experience only.** No agent ever sees a market. A common price, if one forms, is emergent.
+
+**Tests:**
+* An agent without a tool crafts one, consuming the inputs and gaining practice.
+* Crafting never happens when tools are disabled.
+* A tool holder gathers more than 1.3× a matched forager, and its tool wears.
+* `--check` conservation holds every tick over 60 days with tools on.
+* All 18 scenarios and the full release suite pass.
+
+**E2 results** (`sweep --param tools.enabled=false,true --param social.trade_enabled=false,true --param resources.food_regrowth=0.06,0.15 --seed 1-5 --days 300`; mean [95 % CI]):
+
+| tools | trade | food | trades (run) | trade pairs, 30 d | specialisation | wealth Gini | tool holders | price CV |
+|---|---|---|---|---|---|---|---|---|
+| off | on | 0.15 | 431 [319, 543] | 32.6 | 0.0008 | 0.33 [0.31, 0.35] | – | – |
+| on | on | 0.15 | **4,281 [3,160, 5,410]** | **374** | 0.029 [0.024, 0.033] | **0.39 [0.37, 0.41]** | 0.46 | 0.36 |
+| on | off | 0.15 | 0 | 0 | 0.029 [0.023, 0.034] | 0.37 [0.33, 0.40] | 0.31 | – |
+| off | on | 0.06 | 79 [52, 107] | 3.8 | 0.0002 | 0.31 | – | – |
+| on | on | 0.06 | **779 [602, 956]** | **40** | 0.025 | 0.32 | 0.41 | 0.36 |
+
+**Findings against H2:**
+1. **Exchange networks: supported.** With tools, barter rises about 10× at both food levels (H2 predicted ≥ 5×), and the network grows from about 33 to 374 distinct pairs a month. For the first time trade has gains to exploit, and agents find them.
+2. **Inequality emerges from the production chain.** Household wealth Gini rises from 0.33 to 0.39 (non-overlapping CIs) with tools and trade. Tools alone already raise it to 0.37.
+3. **A loosely converging market.** Price beliefs disperse with CV ≈ 0.36 under trade: neither a single price nor independent guesses.
+4. **Division of labour: not supported.** Specialisation rises about 30× but only to 0.03 (H2 predicted > 0.1). Crafters stay under 1 % of adults, and **turning trade off does not lower specialisation** (0.029 either way). Agents craft their own tools and trade spares. They do not become specialists.
+5. **Population is unaffected** (food, not productivity, is what binds). Starvation deaths with tools but without trade (about 2 per run) have CIs that include 0 and are not claimed.
+
+**Why there are no specialists** (a hypothesis for the next experiment, not a fitted result): one batch makes about one tool, which lasts about 48 productive ticks, so each adult needs a new tool only every couple of weeks, and making it costs only a few ticks once materials are in hand. Self-supply is cheap relative to finding a seller among the few co-located agents. Specialisation should appear when **(a)** crafting has strong increasing returns (practice raising output well beyond aptitude) or **(b)** stone is scarce and localised, so that most agents cannot self-supply. Both are single-parameter interventions (`tools.practice_per_tick`, `skills.practice_max`, `resources.stone_threshold`) for the next sweep, and are the natural follow-up to H2.

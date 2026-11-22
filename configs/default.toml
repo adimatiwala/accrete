@@ -118,6 +118,7 @@ carry_juvenile = 15.0
 food_weight = 1.0
 wood_weight = 2.0
 stone_weight = 3.0
+tools_weight = 2.0
 carried_spoil_per_day = 0.019999999552965164
 stored_spoil_per_day = 0.004999999888241291
 chest_capacity = 200.0
@@ -195,6 +196,8 @@ reproduce_land_weight = 3.0
 reproduce_return_weight = 3.0
 reproduce_min_return = 0.8500000238418579
 materials_weight = 0.800000011920929
+tool_weight = 1.0
+tool_trade_weight = 0.800000011920929
 shelter_weight = 0.8999999761581421
 commitment = 0.15000000596046448
 jitter = 0.019999999552965164
@@ -250,6 +253,7 @@ reciprocity_decay_per_day = 0.019999999552965164
 social_slots = 32
 food_value = 1.0
 material_value = 0.6000000238418579
+tool_value = 2.0
 surplus_value = 0.05000000074505806
 
 [infrastructure]
@@ -267,6 +271,21 @@ shelter_wood = 20.0
 shelter_stone = 10.0
 shelter_ticks = 12
 max_shelter = 2
+
+[tools]
+enabled = false
+gather_bonus = 1.5
+durability_ticks = 48.0
+craft_wood = 2.0
+craft_stone = 1.0
+craft_ticks = 4
+output_per_batch = 1.0
+practice_per_tick = 0.019999999552965164
+wanted = 1.0
+price_prior = 3.0
+surplus_threshold_food = 4.0
+price_learning = 0.30000001192092896
+price_gossip = 0.20000000298023224
 
 [disruption]
 scripted = []

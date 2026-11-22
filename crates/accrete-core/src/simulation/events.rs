@@ -131,6 +131,9 @@ pub enum EventKind {
     RouteRestored {
         tiles: u32,
     },
+    Crafted {
+        amount: f32,
+    },
     Pathology {
         kind: PathologyKind,
     },
@@ -210,17 +213,18 @@ impl EventLog {
 
 /// Accounting of every resource change, accumulated in `f64` in a fixed
 /// order. Conservation: `world + carried == initial + regrown - eaten -
-/// spoiled - consumed_by_building` for each resource.
+/// spoiled - consumed_by_building` for each resource. For tools (index 3),
+/// `regrown` counts tools crafted and `construction` tools worn out.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Ledger {
-    pub initial: [f64; 3],
-    pub regrown: [f64; 3],
-    pub gathered: [f64; 3],
+    pub initial: [f64; 4],
+    pub regrown: [f64; 4],
+    pub gathered: [f64; 4],
     pub eaten: f64,
-    pub spoiled: [f64; 3],
-    pub construction: [f64; 3],
+    pub spoiled: [f64; 4],
+    pub construction: [f64; 4],
     /// Moved between holders (agents, chests, piles); conserved.
-    pub transferred: [f64; 3],
+    pub transferred: [f64; 4],
 }
 
 impl Ledger {

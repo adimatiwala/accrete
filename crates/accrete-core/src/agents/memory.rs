@@ -104,6 +104,10 @@ pub struct AgentMemory {
     pub social: Vec<SocialMemory>,
     /// Most-crossed tiles (16 slots by default).
     pub frequent: Vec<FrequentTile>,
+    /// Believed exchange rate, food per tool (A.26); 0 until the agent has
+    /// traded tools or heard someone's rate.
+    #[serde(default)]
+    pub tool_price: f32,
 }
 
 /// Freshness in `(0, 1]`: `half_life / (half_life + age)`. Pure division, so
@@ -129,6 +133,7 @@ impl AgentMemory {
             failed_targets: Vec::new(),
             social: Vec::new(),
             frequent: Vec::new(),
+            tool_price: 0.0,
         }
     }
 
@@ -248,6 +253,7 @@ impl AgentMemory {
             Resource::Food => c.food_slots as usize,
             Resource::Wood => c.wood_slots as usize,
             Resource::Stone => c.stone_slots as usize,
+            Resource::Tools => 0,
         }
     }
 
@@ -756,6 +762,7 @@ impl AgentMemory {
         m.disruptions = parent.disruptions.clone();
         m.home_food_seen = parent.home_food_seen;
         m.home_room_seen = parent.home_room_seen;
+        m.tool_price = parent.tool_price;
         m
     }
 
@@ -819,6 +826,7 @@ impl StableHash for AgentMemory {
             f.pos.stable_hash(h);
             h.f32(f.count);
         }
+        h.f32(self.tool_price);
     }
 }
 

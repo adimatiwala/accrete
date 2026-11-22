@@ -1,0 +1,22 @@
+name = "gathering-with-a-tool"
+description = "Two identical hungry foragers on separate food tiles; one holds a tool and gathers more per tick (tools enabled)."
+map = """
+..........
+..........
+..........
+"""
+[[food]]
+at = [2, 1]
+amount = 30.0
+[[food]]
+at = [7, 1]
+amount = 30.0
+
+[[agent]]
+at = [2, 1]
+hunger = 0.55
+tools = 1.0
+
+[[agent]]
+at = [7, 1]
+hunger = 0.55

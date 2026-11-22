@@ -64,6 +64,18 @@ pub const EXPERIMENTS: &[Experiment] = &[
         description: "food regrowth at 20% of the base rate (resources.food_regrowth x 0.2)",
         apply: |c| c.resources.food_regrowth *= 0.2,
     },
+    Experiment {
+        name: "tools",
+        label: "tools",
+        description: "tools and crafting enabled (tools.enabled = true; research program H2)",
+        apply: |c| c.tools.enabled = true,
+    },
+    Experiment {
+        name: "sharing",
+        label: "no-sharing",
+        description: "knowledge sharing disabled (social.share_enabled = false; research program H3)",
+        apply: |c| c.social.share_enabled = false,
+    },
 ];
 
 /// Columns of `emergence_summary.csv`. `trades_*` and `total_*` columns are
@@ -328,6 +340,13 @@ pub const OUTCOMES: &[Outcome] = &[
     ("moran_sociability", |s| {
         f64::from(last(s).moran_sociability)
     }),
+    // Tools (A.26): division of labour and price formation.
+    ("specialization", |s| f64::from(last(s).specialization)),
+    ("crafter_share", |s| f64::from(last(s).crafter_share)),
+    ("tool_holders_share", |s| {
+        f64::from(last(s).tool_holders_share)
+    }),
+    ("tool_price_cv", |s| f64::from(last(s).tool_price_cv)),
 ];
 
 /// Zipf exponent of home-cluster sizes (residents) at the final state: minus
