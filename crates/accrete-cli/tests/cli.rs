@@ -373,6 +373,90 @@ fn a_sweep_run_reproduces_from_its_manifest() {
 }
 
 #[test]
+fn longer_days_with_the_same_label_is_refused_before_clobbering() {
+    let dir = tmp("daysclash");
+    ok(&accrete(&[
+        "run",
+        "--seed",
+        "1",
+        "--days",
+        "2",
+        "--every",
+        "0",
+        "--save-every",
+        "1",
+        "-o",
+        s(&dir),
+        "--label",
+        "clash",
+    ]));
+    let snap = dir.join("clash_seed1_day001.snap.json");
+    let before = std::fs::read(&snap).unwrap();
+    let o = accrete(&[
+        "run",
+        "--seed",
+        "1",
+        "--days",
+        "4",
+        "--every",
+        "0",
+        "--save-every",
+        "1",
+        "-o",
+        s(&dir),
+        "--label",
+        "clash",
+    ]);
+    assert_ne!(o.status.code(), Some(0), "{o:?}");
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stderr),
+        String::from_utf8_lossy(&o.stdout)
+    );
+    assert!(err.contains("already records a different run"), "{err}");
+    assert_eq!(std::fs::read(&snap).unwrap(), before, "snap not clobbered");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_corrupt_manifest_is_refused_instead_of_overwritten() {
+    let dir = tmp("corruptm");
+    ok(&accrete(&[
+        "run",
+        "--seed",
+        "1",
+        "--days",
+        "1",
+        "--every",
+        "0",
+        "-o",
+        s(&dir),
+    ]));
+    let m = dir.join("run_seed1_manifest.json");
+    std::fs::write(&m, "{not json").unwrap();
+    let o = accrete(&[
+        "run",
+        "--seed",
+        "1",
+        "--days",
+        "1",
+        "--every",
+        "0",
+        "-o",
+        s(&dir),
+    ]);
+    assert_ne!(o.status.code(), Some(0), "{o:?}");
+    let err = format!(
+        "{}{}",
+        String::from_utf8_lossy(&o.stderr),
+        String::from_utf8_lossy(&o.stdout)
+    );
+    assert!(err.contains("cannot be read"), "{err}");
+    assert_eq!(std::fs::read_to_string(&m).unwrap(), "{not json");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn run_indexes_itself_and_save_every_writes_periodic_snapshots() {
     let dir = tmp("index");
     ok(&accrete(&[
@@ -445,5 +529,7 @@ fn run_indexes_itself_and_save_every_writes_periodic_snapshots() {
     );
     let bad = accrete(&["index", "sql", "-d", s(&dir), "DELETE FROM runs"]);
     assert_eq!(bad.status.code(), Some(2));
+    let lim = accrete(&["index", "query", "-d", s(&dir), "--limit", "0"]);
+    assert_eq!(lim.status.code(), Some(2));
     let _ = std::fs::remove_dir_all(&dir);
 }

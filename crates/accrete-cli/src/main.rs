@@ -510,6 +510,9 @@ fn main() {
                 digest,
                 limit,
             } => {
+                if limit == 0 {
+                    fail("--limit must be at least 1");
+                }
                 let db = db.unwrap_or_else(|| index::default_db(&dir));
                 index::run_query(index::QueryArgs {
                     db,

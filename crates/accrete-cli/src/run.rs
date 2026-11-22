@@ -132,18 +132,25 @@ pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
         },
         None => crate::manifest::Start::Fresh { seed },
     };
-    // Refuse a conflicting prior manifest *before* --save-every can clobber
-    // mid-run snapshots. Start/config must match; ticks must match the planned
-    // length unless this run may stop early on extinction (then the end-of-run
-    // write still enforces an exact match).
+    // Refuse a conflicting prior manifest *before* --save-every / metrics can
+    // clobber outputs. A shorter prior run is allowed only when it ended extinct
+    // (so a same-command re-run can rewrite); a completed shorter run vs a longer
+    // `--days` must refuse up front.
     let planned_ticks = u64::from(opts.days) * TICKS_PER_DAY;
     let manifest_path = crate::manifest::Manifest::path_for(out, label, seed);
-    if let Ok(old) = crate::manifest::Manifest::read(&manifest_path) {
+    if manifest_path.is_file() {
+        let old = crate::manifest::Manifest::read(&manifest_path).unwrap_or_else(|e| {
+            panic!(
+                "{} exists but cannot be read ({e}); remove it or use a different --label or -o",
+                manifest_path.display()
+            )
+        });
         let same_start = old.start == start
             && old.start_tick == tick0
             && old.config.digest() == sim.config.digest();
-        let ticks_ok =
-            old.ticks == planned_ticks || (opts.stop_on_extinction && old.ticks <= planned_ticks);
+        let prior_extinct = final_metrics_population(out, label, seed) == Some(0);
+        let ticks_ok = old.ticks == planned_ticks
+            || (opts.stop_on_extinction && old.ticks < planned_ticks && prior_extinct);
         if !same_start || !ticks_ok {
             panic!(
                 "{} already records a different run; use a different --label or -o",
@@ -306,6 +313,17 @@ pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
         Err(e) => panic!("{e}"),
     }
     sim
+}
+
+/// Final `population` from `<label>_seed<S>_metrics.csv`, if present and parseable.
+fn final_metrics_population(out: &Path, label: &str, seed: u64) -> Option<u32> {
+    let text = std::fs::read_to_string(out.join(format!("{label}_seed{seed}_metrics.csv"))).ok()?;
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
+    let header = lines.next()?;
+    let cols: Vec<&str> = header.split(',').collect();
+    let i_pop = cols.iter().position(|c| *c == "population")?;
+    let last = lines.next_back()?;
+    last.split(',').nth(i_pop)?.parse().ok()
 }
 
 fn print_line(m: &DailyMetrics) {

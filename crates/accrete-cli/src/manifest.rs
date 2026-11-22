@@ -137,17 +137,21 @@ impl Manifest {
     pub fn write(&self, out: &Path) -> Result<PathBuf, String> {
         let path = Self::path_for(out, &self.label, self.seed);
         if path.is_file() {
-            if let Ok(old) = Self::read(&path) {
-                let same = old.start == self.start
-                    && old.start_tick == self.start_tick
-                    && old.ticks == self.ticks
-                    && old.config.digest() == self.config.digest();
-                if !same {
-                    return Err(format!(
-                        "{} already records a different run; use a different --label or -o",
-                        path.display()
-                    ));
-                }
+            let old = Self::read(&path).map_err(|e| {
+                format!(
+                    "{} exists but cannot be read ({e}); remove it or use a different --label or -o",
+                    path.display()
+                )
+            })?;
+            let same = old.start == self.start
+                && old.start_tick == self.start_tick
+                && old.ticks == self.ticks
+                && old.config.digest() == self.config.digest();
+            if !same {
+                return Err(format!(
+                    "{} already records a different run; use a different --label or -o",
+                    path.display()
+                ));
             }
         }
         let json = serde_json::to_string_pretty(self).expect("manifest serializes");

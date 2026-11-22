@@ -240,7 +240,7 @@ fn metrics_totals(manifest_dir: &Path, m: &Manifest) -> MetricTotals {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return empty;
     };
-    let mut lines = text.lines();
+    let mut lines = text.lines().filter(|l| !l.trim().is_empty());
     let Some(header) = lines.next() else {
         return empty;
     };
@@ -255,7 +255,7 @@ fn metrics_totals(manifest_dir: &Path, m: &Manifest) -> MetricTotals {
     ) else {
         return empty;
     };
-    let Some(last) = lines.last() else {
+    let Some(last) = lines.next_back() else {
         return empty;
     };
     let cells: Vec<&str> = last.split(',').collect();
@@ -447,8 +447,13 @@ pub fn query(a: &QueryArgs) -> Result<String, String> {
          final_state_hash, config_digest, git_commit, manifest_path FROM runs WHERE 1=1",
     );
     let mut vals: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    if a.limit == 0 {
+        return Err("--limit must be at least 1".into());
+    }
+    let limit = i64::try_from(a.limit).unwrap_or(i64::MAX).max(1);
     if let Some(s) = a.seed {
-        sql.push_str(&format!(" AND seed = {}", s as i64));
+        sql.push_str(" AND seed = ?");
+        vals.push(Box::new(s as i64));
     }
     if let Some(ref l) = a.label {
         sql.push_str(" AND label = ?");
@@ -462,7 +467,8 @@ pub fn query(a: &QueryArgs) -> Result<String, String> {
         sql.push_str(" AND config_digest = ?");
         vals.push(Box::new(d.clone()));
     }
-    sql.push_str(&format!(" ORDER BY seed, label LIMIT {}", a.limit as i64));
+    sql.push_str(" ORDER BY seed, label LIMIT ?");
+    vals.push(Box::new(limit));
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(params_from_iter(vals.iter().map(|b| b.as_ref())), |r| {
