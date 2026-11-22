@@ -24,7 +24,7 @@ use serde::Serialize;
 
 use crate::agents::agent::{Agent, GoalKind, HomePlan};
 use crate::agents::memory::freshness;
-use crate::agents::pathfinding::{AgentBelief, line_cost_estimate};
+use crate::agents::pathfinding::line_cost_estimate;
 use crate::config::{Config, TickRates};
 use crate::geom::Pos;
 use crate::hash::{mix_words, mix64};
@@ -41,6 +41,53 @@ pub struct Term {
     pub value: f32,
 }
 
+/// A candidate's named utility terms, stored inline (A.31): candidates are
+/// built for every option of every agent every tick, and a heap allocation
+/// each was a measurable share of run time. Reads as a slice.
+#[derive(Clone, Copy, Debug)]
+pub struct Terms {
+    len: u8,
+    items: [Term; MAX_TERMS],
+}
+
+impl Default for Terms {
+    fn default() -> Self {
+        Self {
+            len: 0,
+            items: [Term {
+                name: "",
+                value: 0.0,
+            }; MAX_TERMS],
+        }
+    }
+}
+
+impl Terms {
+    fn push(&mut self, t: Term) {
+        self.items[self.len as usize] = t;
+        self.len += 1;
+    }
+}
+
+impl std::ops::Deref for Terms {
+    type Target = [Term];
+    fn deref(&self) -> &[Term] {
+        &self.items[..self.len as usize]
+    }
+}
+
+impl PartialEq for Terms {
+    fn eq(&self, other: &Self) -> bool {
+        **self == **other
+    }
+}
+
+impl Serialize for Terms {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        (**self).serialize(s)
+    }
+}
+
 /// One scored option.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Candidate {
@@ -49,7 +96,7 @@ pub struct Candidate {
     pub join: Option<HomeId>,
     pub score: f32,
     pub est_ticks: f32,
-    pub terms: Vec<Term>,
+    pub terms: Terms,
 }
 
 impl Candidate {
@@ -60,7 +107,7 @@ impl Candidate {
             join: None,
             score: 0.0,
             est_ticks: 0.0,
-            terms: Vec::with_capacity(MAX_TERMS),
+            terms: Terms::default(),
         }
     }
 
@@ -261,7 +308,10 @@ pub fn travel_ticks(agent: &Agent, cx: &Ctx, a: Pos, b: Pos) -> f32 {
     let mp = if omniscient(cx.config) {
         line_cost_estimate(cx.world, &crate::agents::pathfinding::Omniscient, a, b, mc)
     } else {
-        line_cost_estimate(cx.world, &AgentBelief(&agent.memory), a, b, mc)
+        agent
+            .line_memo
+            .borrow_mut()
+            .line_cost(cx.tick, cx.world, &agent.memory, a, b, mc)
     };
     mp as f32 / mc.mp_per_tick as f32
 }

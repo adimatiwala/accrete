@@ -20,6 +20,7 @@
 //! X drop the branch. Interventions change world conditions only.
 
 mod story;
+mod view3d;
 
 use std::path::PathBuf;
 
@@ -34,15 +35,35 @@ use macroquad::prelude::*;
 
 const PANEL_W: f32 = 470.0;
 const TOP_H: f32 = 30.0;
-const SPEEDS: [f32; 8] = [1.0, 4.0, 12.0, 24.0, 72.0, 240.0, 720.0, 2400.0];
+/// Ticks per second; the last entry is MAX (as fast as the machine allows).
+const SPEEDS: [f32; 9] = [
+    1.0,
+    4.0,
+    12.0,
+    24.0,
+    72.0,
+    240.0,
+    720.0,
+    2400.0,
+    f32::INFINITY,
+];
+/// Interpolation, trails and per-tick narration only at or below this speed.
+const FINE_SPEED: f32 = 24.0;
 
-fn window_conf() -> Conf {
-    Conf {
-        window_title: "Accrete".to_owned(),
-        window_width: 1400,
-        window_height: 860,
-        high_dpi: false,
-        sample_count: 1,
+fn window_conf() -> macroquad::conf::Conf {
+    macroquad::conf::Conf {
+        miniquad_conf: Conf {
+            window_title: "Accrete".to_owned(),
+            window_width: 1400,
+            window_height: 860,
+            high_dpi: false,
+            // Antialiasing for the 3D view's edges.
+            sample_count: 4,
+            ..Default::default()
+        },
+        // Large enough for one 3D terrain chunk per draw call.
+        draw_call_vertex_capacity: view3d::MAX_VERTS + 1,
+        draw_call_index_capacity: view3d::MAX_INDICES + 1,
         ..Default::default()
     }
 }
@@ -55,7 +76,10 @@ struct Args {
     intervene: Option<usize>,
     view_b: bool,
     screenshot: Option<PathBuf>,
+    three_d: bool,
     frames: u32,
+    bench_frames: u32,
+    speed: Option<usize>,
     select: Option<u32>,
     play: bool,
     /// `--seed` or `--config` given: these describe a new world, so they
@@ -72,7 +96,10 @@ fn parse_args() -> Args {
         intervene: None,
         view_b: false,
         screenshot: None,
+        three_d: false,
         frames: 3,
+        bench_frames: 0,
+        speed: None,
         select: None,
         play: false,
         new_world_args: false,
@@ -88,9 +115,15 @@ fn parse_args() -> Args {
             }
             "--day" => a.day = next.parse().unwrap_or(0),
             "--frames" => a.frames = next.parse().unwrap_or(3),
+            "--bench-frames" => a.bench_frames = next.parse().unwrap_or(300),
+            "--speed" => a.speed = next.parse().ok(),
             "--select" => a.select = next.parse().ok(),
             "--play" => {
                 a.play = true;
+                i -= 1; // flag takes no value
+            }
+            "--3d" => {
+                a.three_d = true;
                 i -= 1; // flag takes no value
             }
             "--screenshot" => a.screenshot = Some(PathBuf::from(&next)),
@@ -207,6 +240,15 @@ struct App {
     status: Option<(String, f64)>,
     /// Narration, roles, effects and biographies (presentation only).
     story: story::Story,
+    /// The 3D diorama view (M).
+    view3d: view3d::View3D,
+    /// Frame timing (P shows it; `--bench-frames` prints it).
+    perf: Perf,
+    show_perf: bool,
+    /// Ticks actually simulated per second (smoothed).
+    achieved: f32,
+    view3d_dirty: bool,
+    last_3d_rebuild: f64,
 }
 
 impl App {
@@ -214,7 +256,14 @@ impl App {
         let sim = Simulation::new(seed, config.clone());
         let texture = map_texture(&sim, Overlay::Biome);
         let story = story::Story::new(&sim);
+        let view3d = view3d::View3D::new(&sim);
         let mut app = Self {
+            view3d,
+            perf: Perf::default(),
+            show_perf: false,
+            achieved: 0.0,
+            view3d_dirty: false,
+            last_3d_rebuild: f64::NEG_INFINITY,
             story,
             sim,
             seed,
@@ -419,22 +468,7 @@ impl App {
     /// the simulation runs slowly enough to see it, and fanned out a little so
     /// people sharing a tile stay visible.
     fn agent_screen_pos(&self, a: &Agent) -> Vec2 {
-        let cur = self.tile_to_screen(a.pos);
-        let frac = if !self.paused && SPEEDS[self.speed] <= 24.0 {
-            self.accumulator.clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
-        let base = match self.story.prev.get(&a.id) {
-            Some(&p) if p != a.pos && p.chebyshev(a.pos) <= 2 => {
-                let from = self.tile_to_screen(p);
-                from + (cur - from) * frac
-            }
-            _ => cur,
-        };
-        let jitter = ((a.id.wrapping_mul(2_654_435_761) >> 16) & 0xff) as f32 / 255.0 - 0.5;
-        let jitter2 = ((a.id.wrapping_mul(40_503) >> 8) & 0xff) as f32 / 255.0 - 0.5;
-        base + vec2(jitter, jitter2) * self.zoom * 0.6
+        self.offset + self.agent_tile_pos(a) * self.zoom
     }
 
     fn regenerate(&mut self, seed: u64) {
@@ -479,6 +513,57 @@ impl App {
     fn refresh_texture(&mut self) {
         self.texture = map_texture(&self.sim, self.overlay);
         self.texture_tick = self.sim.tick;
+        if self.view3d.on {
+            if self.paused || get_time() - self.last_3d_rebuild >= 2.0 {
+                self.rebuild_3d();
+            } else {
+                self.view3d_dirty = true;
+            }
+        }
+    }
+
+    fn rebuild_3d(&mut self) {
+        let t = std::time::Instant::now();
+        let colors = render_tiles(&self.sim.world, &self.sim.config, self.overlay);
+        self.view3d
+            .rebuild(&self.sim, &colors, matches!(self.overlay, Overlay::Biome));
+        self.perf.rebuild.add(t.elapsed());
+        self.view3d_dirty = false;
+        self.last_3d_rebuild = get_time();
+    }
+
+    fn set_3d(&mut self, on: bool) {
+        self.view3d.on = on;
+        if on {
+            self.rebuild_3d();
+        }
+    }
+
+    /// An agent's position in tile coordinates (tile `x` spans `[x, x+1]`),
+    /// interpolated between ticks and fanned out on shared tiles.
+    fn agent_tile_pos(&self, a: &Agent) -> Vec2 {
+        let cur = vec2(a.pos.x as f32 + 0.5, a.pos.y as f32 + 0.5);
+        let frac = if !self.paused && SPEEDS[self.speed] <= FINE_SPEED {
+            self.accumulator.clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let base = match self.story.prev.get(&a.id) {
+            Some(&p) if p != a.pos && p.chebyshev(a.pos) <= 2 => {
+                let from = vec2(p.x as f32 + 0.5, p.y as f32 + 0.5);
+                from + (cur - from) * frac
+            }
+            _ => cur,
+        };
+        let jitter = ((a.id.wrapping_mul(2_654_435_761) >> 16) & 0xff) as f32 / 255.0 - 0.5;
+        let jitter2 = ((a.id.wrapping_mul(40_503) >> 8) & 0xff) as f32 / 255.0 - 0.5;
+        base + vec2(jitter, jitter2) * 0.6
+    }
+
+    /// An agent's position in the 3D scene (feet on the ground).
+    fn agent_world_pos(&self, a: &Agent) -> Vec3 {
+        let p = self.agent_tile_pos(a);
+        vec3(p.x, self.view3d.height_at(p.x, p.y).max(0.0), p.y)
     }
 
     fn handle_input(&mut self) {
@@ -611,6 +696,43 @@ impl App {
         }
         if is_key_pressed(KeyCode::C) {
             self.fit();
+            self.view3d.reset_camera();
+        }
+        if is_key_pressed(KeyCode::M) {
+            self.set_3d(!self.view3d.on);
+            self.say(if self.view3d.on {
+                "3D view: right-drag or Q/E orbit, wheel zoom, WASD pan, O auto-orbit"
+            } else {
+                "map view"
+            });
+        }
+        if is_key_pressed(KeyCode::P) {
+            self.show_perf = !self.show_perf;
+        }
+        if is_key_pressed(KeyCode::O) {
+            self.view3d.auto_orbit = !self.view3d.auto_orbit;
+        }
+        if self.view3d.on {
+            let area = self.map_area();
+            self.view3d.input(area);
+            let mouse = Vec2::from(mouse_position());
+            if is_mouse_button_pressed(MouseButton::Left) && area.contains(mouse) {
+                let cam = self.view3d.camera(area);
+                let picked = self
+                    .sim
+                    .agents
+                    .iter()
+                    .filter_map(|a| {
+                        let p = self.agent_world_pos(a) + vec3(0.0, 0.5, 0.0);
+                        view3d::View3D::project(&cam, area, p).map(|s| (a.id, s.distance(mouse)))
+                    })
+                    .filter(|&(_, d)| d < 16.0)
+                    .min_by(|a, b| a.1.total_cmp(&b.1));
+                if let Some((id, _)) = picked {
+                    self.selection = Selection::Agent(id);
+                }
+            }
+            return;
         }
 
         // Pan.
@@ -669,22 +791,62 @@ impl App {
         if self.paused || self.seed_entry.is_some() {
             return;
         }
-        self.accumulator += SPEEDS[self.speed] * get_frame_time().min(0.1);
-        let mut budget = 0;
-        let budget_max = if self.branch.is_some() { 1000 } else { 2000 };
-        while self.accumulator >= 1.0 && budget < budget_max {
-            self.step_all();
-            self.accumulator -= 1.0;
-            budget += 1;
+        // Step on a time budget, not a tick count, so the window stays
+        // responsive at any speed; MAX runs as many ticks as fit.
+        let target = SPEEDS[self.speed];
+        let max = !target.is_finite();
+        let fine = target <= FINE_SPEED;
+        if !max {
+            self.accumulator += target * get_frame_time().min(0.1);
         }
-        if budget == budget_max {
-            self.accumulator = 0.0;
+        let budget = std::time::Duration::from_millis(if max { 45 } else { 16 });
+        let start = std::time::Instant::now();
+        let mut stepped = 0u32;
+        loop {
+            if !max && self.accumulator < 1.0 {
+                break;
+            }
+            if start.elapsed() >= budget {
+                // Falling behind: drop the backlog rather than spiral.
+                self.accumulator = self.accumulator.min(1.0);
+                break;
+            }
+            if fine {
+                self.step_all();
+            } else {
+                // Fast: narration and trails are updated once per frame below.
+                self.sim.step();
+                if let Some(b) = self.branch.as_mut() {
+                    b.other.step();
+                }
+            }
+            if !max {
+                self.accumulator -= 1.0;
+            }
+            stepped += 1;
         }
-        // Resource overlays change daily; others only on regenerate.
+        if !fine && stepped > 0 {
+            self.story.after_step(&self.sim, get_time());
+            self.story.before_step(&self.sim);
+        }
+        let dt = get_frame_time().max(1e-3);
+        self.achieved = 0.9 * self.achieved + 0.1 * stepped as f32 / dt;
+        // Resource overlays change daily; others only on regenerate. The 3D
+        // scene is rebuilt at most every two seconds while running.
         if self.sim.tick / TICKS_PER_DAY != self.texture_tick / TICKS_PER_DAY {
             self.refresh_texture();
         }
-        if self.follow {
+        if self.view3d_dirty && get_time() - self.last_3d_rebuild >= 2.0 {
+            self.rebuild_3d();
+        }
+        if self.follow && self.view3d.on {
+            if let Selection::Agent(id) = self.selection {
+                if let Some(a) = self.sim.agent(id) {
+                    let p = self.agent_world_pos(a);
+                    self.view3d.target += (p - self.view3d.target) * 0.08;
+                }
+            }
+        } else if self.follow {
             if let Selection::Agent(id) = self.selection {
                 if let Some(a) = self.sim.agent(id) {
                     let area = self.map_area();
@@ -696,6 +858,11 @@ impl App {
     }
 
     fn draw(&self) {
+        if self.view3d.on {
+            self.draw_3d();
+            self.draw_hud();
+            return;
+        }
         clear_background(Color::from_rgba(16, 18, 22, 255));
         let w = self.sim.world.dims.width as f32 * self.zoom;
         let h = self.sim.world.dims.height as f32 * self.zoom;
@@ -714,6 +881,14 @@ impl App {
             self.draw_story_overlays();
         }
         self.draw_selection_marker();
+        self.draw_hud();
+    }
+
+    /// Everything drawn on top of the map in both views.
+    fn draw_hud(&self) {
+        if self.view3d.on && self.story.enabled {
+            self.draw_story_overlays();
+        }
         self.draw_top_bar();
         self.draw_panel();
         if self.help {
@@ -951,7 +1126,12 @@ impl App {
     fn draw_story_overlays(&self) {
         let area = self.map_area();
         let z = self.zoom;
-        for s in &self.sim.settlements.tracked {
+        let flat = if self.view3d.on {
+            &[][..]
+        } else {
+            &self.sim.settlements.tracked[..]
+        };
+        for s in flat {
             let centre = Pos::new(s.centre.0.round() as i32, s.centre.1.round() as i32);
             let c = self.offset + vec2(s.centre.0 + 0.5, s.centre.1 + 0.5) * z;
             let r = (3.0 + (s.homes.len() as f32).sqrt()) * z;
@@ -1080,6 +1260,220 @@ impl App {
         }
     }
 
+    /// The 3D diorama: sky, terrain, homes, people, effects, sea, labels.
+    fn draw_3d(&self) {
+        let area = self.map_area();
+        clear_background(Color::from_rgba(16, 18, 22, 255));
+        // Sky gradient behind the scene.
+        let (top, bottom) = (
+            Color::from_rgba(52, 78, 112, 255),
+            Color::from_rgba(190, 205, 215, 255),
+        );
+        let mut sky = view3d::MeshBuilder::default();
+        let (x0, y0, x1, y1) = (area.x, area.y, area.x + area.w, area.y + area.h);
+        let col = |c: Color| -> [u8; 4] { c.into() };
+        sky.meshes.push(Mesh {
+            vertices: [
+                (x0, y0, top),
+                (x1, y0, top),
+                (x1, y1, bottom),
+                (x0, y1, bottom),
+            ]
+            .iter()
+            .map(|&(x, y, c)| macroquad::models::Vertex {
+                position: vec3(x, y, 0.0),
+                uv: Vec2::ZERO,
+                color: col(c),
+                normal: Vec4::ZERO,
+            })
+            .collect(),
+            indices: vec![0, 1, 2, 0, 2, 3],
+            texture: None,
+        });
+        sky.draw();
+
+        let cam = self.view3d.camera(area);
+        set_camera(&cam);
+        self.view3d.draw_static();
+
+        // Homes and people, rebuilt every frame.
+        let mut mb = view3d::MeshBuilder::default();
+        for home in &self.sim.world.homes {
+            let (x, z) = (home.pos.x as f32 + 0.5, home.pos.y as f32 + 0.5);
+            let y = self.view3d.height_at(x, z).max(0.0);
+            let s = 0.9 + 0.12 * f32::from(home.shelter_level);
+            let (walls, roof) = if home.is_vacant() {
+                (
+                    Color::from_rgba(150, 146, 140, 255),
+                    Color::from_rgba(110, 100, 95, 255),
+                )
+            } else {
+                (
+                    Color::from_rgba(236, 226, 200, 255),
+                    Color::from_rgba(186, 72, 52, 255),
+                )
+            };
+            mb.cuboid(vec3(x, y - 0.1, z), vec3(0.7 * s, 0.6 * s, 0.7 * s), walls);
+            mb.cone(
+                vec3(x, y + 0.5 * s, z),
+                0.62 * s,
+                0.5 * s,
+                4,
+                std::f32::consts::FRAC_PI_4,
+                roof,
+            );
+            if !home.chests.is_empty() {
+                mb.cuboid(
+                    vec3(x + 0.55, y - 0.05, z + 0.25),
+                    vec3(0.3, 0.28, 0.24),
+                    Color::from_rgba(214, 170, 60, 255),
+                );
+            }
+        }
+        let skin = Color::from_rgba(232, 196, 160, 255);
+        for a in &self.sim.agents {
+            let p = self.agent_world_pos(a);
+            let k = if a.is_juvenile(&self.sim.rates) {
+                0.65
+            } else {
+                1.0
+            };
+            let body = story::Role::of(a).color();
+            mb.cuboid(p, vec3(0.26 * k, 0.5 * k, 0.26 * k), body);
+            let head = if a.age_ticks >= self.sim.rates.elder_ticks {
+                Color::from_rgba(225, 225, 225, 255)
+            } else {
+                skin
+            };
+            mb.cuboid(
+                p + vec3(0.0, 0.5 * k, 0.0),
+                vec3(0.2 * k, 0.2 * k, 0.2 * k),
+                head,
+            );
+            if a.inventory.tools > 0.0 {
+                mb.cuboid(
+                    p + vec3(0.17, 0.15, 0.0),
+                    vec3(0.06, 0.35, 0.06),
+                    story::Role::Crafter.color(),
+                );
+            }
+        }
+        mb.draw();
+
+        // Ground rings: settlements, droughts.
+        let ring = |c: Vec2, r: f32, col: Color| {
+            let mut prev = None;
+            for k in 0..=48 {
+                let ang = k as f32 / 48.0 * std::f32::consts::TAU;
+                let (x, z) = (c.x + ang.cos() * r, c.y + ang.sin() * r);
+                let p = vec3(x, self.view3d.height_at(x, z).max(0.0) + 0.15, z);
+                if let Some(q) = prev {
+                    draw_line_3d(q, p, col);
+                }
+                prev = Some(p);
+            }
+        };
+        for s in &self.sim.settlements.tracked {
+            let r = 3.0 + (s.homes.len() as f32).sqrt();
+            let confirmed = s.class != accrete_core::simulation::settlement::SizeClass::Candidate;
+            let col = if confirmed {
+                Color::from_rgba(255, 110, 210, 255)
+            } else {
+                Color::from_rgba(180, 180, 255, 200)
+            };
+            ring(vec2(s.centre.0 + 0.5, s.centre.1 + 0.5), r, col);
+        }
+        for d in &self.sim.weather.active {
+            ring(
+                vec2(d.center.x as f32 + 0.5, d.center.y as f32 + 0.5),
+                d.radius as f32,
+                Color::from_rgba(255, 140, 0, 255),
+            );
+        }
+        // Story effects.
+        if self.story.enabled {
+            let now = get_time();
+            for (t0, fx) in &self.story.effects {
+                let age = ((now - t0) / 2.5).clamp(0.0, 1.0) as f32;
+                match fx {
+                    story::Fx::TradeArc { a, b } => {
+                        let (Some(pa), Some(pb)) = (self.sim.agent(*a), self.sim.agent(*b)) else {
+                            continue;
+                        };
+                        let (x, y) = (self.agent_world_pos(pa), self.agent_world_pos(pb));
+                        let col = Color::new(1.0, 0.84, 0.3, 1.0 - age);
+                        let mut prev = x + vec3(0.0, 0.6, 0.0);
+                        for k in 1..=16 {
+                            let t = k as f32 / 16.0;
+                            let q = x + (y - x) * t + vec3(0.0, 0.6 + 4.0 * t * (1.0 - t), 0.0);
+                            draw_line_3d(prev, q, col);
+                            prev = q;
+                        }
+                    }
+                    story::Fx::Pulse { at, color } | story::Fx::Ring { at, color } => {
+                        let mut c = *color;
+                        c.a = 1.0 - age;
+                        ring(
+                            vec2(at.x as f32 + 0.5, at.y as f32 + 0.5),
+                            0.5 + 2.0 * age,
+                            c,
+                        );
+                    }
+                }
+            }
+        }
+        // Selected person: a beacon.
+        if let Selection::Agent(id) = self.selection {
+            if let Some(a) = self.sim.agent(id) {
+                let p = self.agent_world_pos(a);
+                let bob = (get_time() * 3.0).sin() as f32 * 0.15;
+                let top = p + vec3(0.0, 1.6 + bob, 0.0);
+                draw_line_3d(
+                    p + vec3(0.0, 0.8, 0.0),
+                    top,
+                    Color::from_rgba(255, 60, 60, 255),
+                );
+                let mut m = view3d::MeshBuilder::default();
+                m.cone(top, 0.25, -0.4, 4, 0.0, Color::from_rgba(255, 70, 70, 255));
+                m.draw();
+            }
+        }
+        self.view3d.draw_water();
+        set_default_camera();
+
+        // Settlement names float above their hamlets.
+        for s in &self.sim.settlements.tracked {
+            let (x, z) = (s.centre.0 + 0.5, s.centre.1 + 0.5);
+            let p = vec3(x, self.view3d.height_at(x, z).max(0.0) + 3.5, z);
+            let Some(sp) = view3d::View3D::project(&cam, area, p) else {
+                continue;
+            };
+            if !area.contains(sp) {
+                continue;
+            }
+            let centre = Pos::new(s.centre.0.round() as i32, s.centre.1.round() as i32);
+            let confirmed = s.class != accrete_core::simulation::settlement::SizeClass::Candidate;
+            let label = if confirmed {
+                format!(
+                    "{}  ({} people)",
+                    story::settlement_name(&self.sim, s.id, centre),
+                    s.residents
+                )
+            } else {
+                format!("{} people settling", s.residents)
+            };
+            let dims = measure_text(&label, None, 18, 1.0);
+            draw_rectangle(
+                sp.x - dims.width / 2.0 - 5.0,
+                sp.y - 16.0,
+                dims.width + 10.0,
+                22.0,
+                Color::from_rgba(0, 0, 0, 160),
+            );
+            draw_text(&label, sp.x - dims.width / 2.0, sp.y, 18.0, WHITE);
+        }
+    }
+
     fn draw_selection_marker(&self) {
         match self.selection {
             Selection::Agent(id) => {
@@ -1132,14 +1526,26 @@ impl App {
         );
         let m = self.sim.metrics.last();
         let text = format!(
-            "seed {}  |  day {} tick {}  |  pop {}  homes {}  |  {}  {} ticks/s  |  overlay [{}] {}  |  H help",
+            "seed {}  |  day {} tick {}  |  pop {}  homes {}  |  {}  {}  |  overlay [{}] {}  |  H help",
             self.seed,
             self.sim.day(),
             self.sim.tick,
             self.sim.population(),
             m.map_or(0, |m| m.homes_occupied),
             if self.paused { "PAUSED" } else { "running" },
-            SPEEDS[self.speed],
+            {
+                let t = SPEEDS[self.speed];
+                let label = if t.is_finite() {
+                    format!("{t} ticks/s")
+                } else {
+                    "MAX".to_string()
+                };
+                if self.paused || (t.is_finite() && self.achieved >= 0.9 * t) {
+                    label
+                } else {
+                    format!("{label} (achieving {:.0})", self.achieved)
+                }
+            },
             Overlay::ALL
                 .iter()
                 .position(|&o| o == self.overlay)
@@ -1147,6 +1553,25 @@ impl App {
             self.overlay.name(),
         );
         draw_text(&text, 10.0, 21.0, 20.0, WHITE);
+        if self.show_perf {
+            let line = self.perf.short();
+            let dims = measure_text(&line, None, 18, 1.0);
+            let area = self.map_area();
+            draw_rectangle(
+                area.x + area.w - dims.width - 18.0,
+                area.y + 6.0,
+                dims.width + 12.0,
+                24.0,
+                Color::from_rgba(0, 0, 0, 180),
+            );
+            draw_text(
+                &line,
+                area.x + area.w - dims.width - 12.0,
+                area.y + 23.0,
+                18.0,
+                Color::from_rgba(140, 255, 160, 255),
+            );
+        }
         let mut right = String::new();
         if let Some(b) = &self.branch {
             right = format!(
@@ -1578,6 +2003,7 @@ impl App {
         let area = self.map_area();
         let lines = [
             "Space  pause / run          .  step one tick",
+            "M  3D view (right-drag/Q/E orbit, wheel zoom, O auto-orbit)",
             "+ / -  speed                Tab / 1-0  overlay",
             "WASD / arrows / right-drag  pan     wheel  zoom",
             "click  inspect agent/tile   F  follow selected agent",
@@ -1650,6 +2076,71 @@ fn map_texture(sim: &Simulation, overlay: Overlay) -> Texture2D {
     tex
 }
 
+/// Rolling frame-time statistics (presentation only).
+#[derive(Default)]
+struct Perf {
+    frames: u64,
+    ticks: u64,
+    sim: Stat,
+    draw: Stat,
+    rebuild: Stat,
+}
+
+#[derive(Default)]
+struct Stat {
+    total: std::time::Duration,
+    count: u64,
+    /// Exponential moving average in milliseconds, for the on-screen readout.
+    ema_ms: f64,
+}
+
+impl Stat {
+    fn add(&mut self, d: std::time::Duration) {
+        self.total += d;
+        self.count += 1;
+        let ms = d.as_secs_f64() * 1e3;
+        self.ema_ms = if self.count == 1 {
+            ms
+        } else {
+            0.9 * self.ema_ms + 0.1 * ms
+        };
+    }
+    fn mean_ms(&self) -> f64 {
+        if self.count == 0 {
+            0.0
+        } else {
+            self.total.as_secs_f64() * 1e3 / self.count as f64
+        }
+    }
+}
+
+impl Perf {
+    fn short(&self) -> String {
+        let frame = self.sim.ema_ms + self.draw.ema_ms;
+        format!(
+            "{:.0} fps | sim {:.1} ms  draw {:.1} ms  3D rebuild {:.0} ms",
+            1000.0 / frame.max(0.1),
+            self.sim.ema_ms,
+            self.draw.ema_ms,
+            self.rebuild.ema_ms
+        )
+    }
+    fn report(&self) -> String {
+        let secs = (self.sim.total + self.draw.total).as_secs_f64();
+        format!(
+            "bench: {} frames, {} ticks | {:.1} fps | sim {:.2} ms/frame ({:.0} ticks/s) | draw {:.2} ms/frame | 3D rebuilds {} x {:.1} ms",
+            self.frames,
+            self.ticks,
+            self.frames as f64 / secs.max(1e-9),
+            self.sim.mean_ms(),
+            self.ticks as f64 / self.sim.total.as_secs_f64().max(1e-9),
+            self.draw.mean_ms(),
+            self.rebuild.count,
+            self.rebuild.mean_ms(),
+        )
+    }
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
     let args = parse_args();
@@ -1700,12 +2191,37 @@ async fn main() {
         }
     }
     app.paused = !args.play;
+    if let Some(k) = args.speed {
+        app.speed = k.min(SPEEDS.len() - 1);
+    }
+    if args.three_d {
+        app.set_3d(true);
+    }
     let mut frame = 0u32;
+    if args.bench_frames > 0 {
+        app.paused = false;
+    }
+    let wall = std::time::Instant::now();
     loop {
+        let t0 = std::time::Instant::now();
         app.handle_input();
+        let tick0 = app.sim.tick;
         app.advance();
+        let t1 = std::time::Instant::now();
+        app.perf.sim.add(t1 - t0);
+        app.perf.ticks += app.sim.tick - tick0;
         app.draw();
+        app.perf.draw.add(t1.elapsed());
+        app.perf.frames += 1;
         frame += 1;
+        if args.bench_frames > 0 && frame >= args.bench_frames {
+            eprintln!(
+                "{} | wall {:.1} fps",
+                app.perf.report(),
+                f64::from(frame) / wall.elapsed().as_secs_f64()
+            );
+            break;
+        }
         if let Some(path) = &args.screenshot {
             if frame >= args.frames {
                 get_screen_data().export_png(&path.to_string_lossy());

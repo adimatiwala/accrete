@@ -1672,3 +1672,51 @@ The binding constraint is finding a counterparty: barter happens only between co
 All four effects survive Holm correction. Population, Gini, trades and clustering R are unchanged (all CIs span 0). The same learning rule is inert in the foraging economy (A.27) and creates trait geography in the production economy, which is consistent with cultural-evolution theory: payoff-biased transmission needs payoffs that covary with behaviour. The A.27 hamlet effect did **not** replicate under tools (−0.7 [−1.7, +0.2]) and is withdrawn.
 
 **Paper.** `docs/paper/accrete.tex` (compiled to `accrete.pdf` with Tectonic: `tectonic -X compile docs/paper/accrete.tex`) is a working paper. It gives the full mathematical model (needs, utility, regrowth, barter, price learning, culture, pipeline), the reproducibility guarantees, the measurement definitions (Clark–Evans, Moran's I, Gini, specialisation), the statistical protocol (paired t, Saltelli/Jansen estimators, bootstrap, noise share, Holm), the results of E1, E2, E2b and E5 with figures, the limitations and the next experiments.
+
+### A.30 Viewer 3D diorama view
+
+`M` (or `--3d`) switches the viewer's map to a 3D scene, in `crates/accrete-viewer/src/view3d.rs`. It is presentation only: it reads the world and agents and never changes them, and core is untouched.
+
+| Piece | How |
+|---|---|
+| **Terrain** | A low-poly heightfield: one quad per tile in the active overlay's colour. Corners are shared, so the land is continuous. Height is a power curve of elevation above sea level (rivers carved slightly); the sea floor goes from sand to deep. Snow tints high peaks in the biome overlay. |
+| **Lighting** | Macroquad has no lighting, so sun and sky shading is baked into vertex colours per face. |
+| **Diorama** | Earth walls down to a base, a translucent sea sheet, and glass walls where the sea meets the edge. |
+| **Life** | Forest cones (one or two tiers) whose number follows the standing wood, so clearing is visible; boulders on stone. Houses are walls plus a pyramid roof (grey when vacant, a gold chest when there is storage), scaled by shelter level. People are role-coloured figures (elders white-haired, children smaller, tool holders carrying a tool), interpolated between ticks. |
+| **Story in 3D** | Trade arcs, birth, death and home rings, settlement and drought rings on the ground, floating settlement names, and a beacon over the selected person. The ticker, legend and inspector stay as 2D overlays. |
+| **Camera** | Orbit with right-drag or `Q`/`E`, zoom with the wheel, pan with WASD; `O` auto-orbits, `F` follows the selected person, `C` resets. Clicking picks the nearest projected person. |
+
+**Decisions:**
+* **Chunked meshes.** Meshes are split at 60k vertices / 90k indices (u16 indices). `window_conf` now returns `macroquad::conf::Conf` with a draw-call buffer of that size, and 4× MSAA.
+* **Rebuild timing.** The static scene is rebuilt whenever the map texture refreshes (daily, or on an overlay change), so overlays and deforestation show in 3D.
+
+**Verified:** `--screenshot` of seed 2 at day 150 in 3D; viewer tests pass.
+
+### A.31 Performance: faster decisions, and a viewer that runs at any speed
+
+**Measured first.** A 300-day run (seed 2, about 520 people at the end) took 28.5 s. Phase timers showed `decision::evaluate` at 68 % of run time. Inside it, exploration (16 rays up to 48 tiles, each scored with two believed line costs) and food gathering dominated, with 77 M line-cost estimates per run. The viewer benchmark (`--bench-frames`) showed the 3D view falling to **2.3 fps** at 240 ticks/s, because the scene was rebuilt every simulated day (up to 70 ms) and the stepping loop ran up to 2,000 ticks per frame, freezing the window.
+
+**Simulation** (all exact: every daily metric over 300 days is byte-identical, and the golden hashes are unchanged):
+
+| Change | Why it is exact |
+|---|---|
+| `LineMemo`: a per-agent memo of believed line costs, keyed by the line's endpoints | Validated once per tick against exact copies of its inputs (known-tile count, which only grows; remembered changed tiles; seen disruptions). Terrain is static, and memory is fixed between `observe` and `propose`, where line costs are used. It is a derived cache (`#[serde(skip)]`, not hashed, equal to every other memo), like `frontier_cache`. |
+| `line_cost_estimate_memory`: the line walk for an agent's own belief gathers the remembered changed tiles inside the line's bounding box once, instead of scanning all of them on every tile | Same first match in the same memory order. It falls back to the general walk when more than 32 are inside. A test compares the two on every agent's real memory over many lines. |
+| Candidate terms stored inline, not in a heap `Vec` | Allocations fall from 25 M to 10 M per 150 days. Results are unaffected (reads as a slice, serializes the same). |
+
+The result is −33 % at 150 days and −13 % at 300 days (26.8 → 23.3 s, interleaved A/B). The gain shrinks as towns grow, because moving agents learn tiles every tick, which correctly invalidates their memo.
+
+Tried and reverted, with no measurable gain: index-permutation sorting of candidates, and reusing trace buffers. The remaining cost is spread over building and scoring about 35 candidates per agent per tick. Further large exact gains would need either fewer re-evaluations (which changes behaviour) or parallel proposals across agents. The latter is deterministic by design (proposals read a frozen world), but the project rules currently forbid parallelism inside one simulation, so it is left for an explicit decision.
+
+**Viewer:**
+
+| Change | Effect |
+|---|---|
+| Time-budgeted stepping (16 ms per frame; 45 ms at MAX) replaces the 2,000-tick cap | The window never freezes, and the backlog is dropped instead of spiralling. |
+| New **MAX** speed, with the achieved ticks/s shown in the top bar | You can see the machine's real limit. |
+| Above 24 ticks/s, story bookkeeping (positions, trails, narration) runs once per frame instead of per tick | Narration reads the event log, so nothing is lost below its capacity. |
+| 3D rebuilds at most every 2 s while running (immediately when paused) | Rebuild cost fell from 31–70 ms to 18 ms. |
+| Lighter trees (5-sided cones, a second tier on one in three, no trunk) | Draw fell from 10.9 to 5.6 ms per frame. |
+| `P` frame-time readout; `--speed`, `--bench-frames N` | Performance work can be measured. |
+
+3D at 240 ticks/s went from **2.3 to 38 fps**. MAX runs about 210 ticks/s at day 150 without freezing.
