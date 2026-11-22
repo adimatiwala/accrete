@@ -1286,13 +1286,13 @@ The three paired ablations from the Day 5 plan, as `accrete experiments`:
 
 The Week 3 behavioural scenarios (complementary and identical trade, reciprocity terms, busy-trail roads, selfish road reluctance) were already in the tree; this suite is the multi-day headless comparison the Day 5 plan asked for.
 
-**First results** (seed 1, 100 days):
+**First results** (seed 1, 100 days; trades are run totals):
 
-| Pair | Population (control → intervention) | Notable |
-|---|---|---|
-| trade | 284 → 286 | Intervention trades 0; control traded; hashes diverge |
-| trails | 284 → 283 | Intervention trail tiles 0; control 7; forage radius slightly longer without discounts |
-| selfish | 284 → 283 | Hashes diverge; trail tiles 7 → 3 |
+| Pair | Population | Trades | Trail tiles | Notable |
+|---|---|---|---|---|
+| trade | 284 → 286 | 107 → 0 | 7 → 2 | No barter under the intervention; hashes diverge |
+| trails | 284 → 283 | 107 → 95 | 7 → 0 | No worn trails; forage radius 2.92 → 3.11 |
+| selfish | 284 → 283 | 107 → 87 | 7 → 3 | Hashes diverge; slightly fewer trails |
 
 One seed and 100 days, not yet a finding. Phase 2 (Section 9) is multi-seed averages.
 
