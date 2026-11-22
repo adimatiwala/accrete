@@ -24,6 +24,44 @@ pub struct RunOpts<'a> {
     pub timelapse: &'a [u32],
     /// Write a snapshot of the final state here.
     pub save: Option<&'a Path>,
+    /// Stop early when the population dies out. Branch comparisons keep
+    /// going, so both series cover the same days (population 0 after
+    /// extinction; the world keeps changing).
+    pub stop_on_extinction: bool,
+}
+
+/// A run label is used in output file names: it must be a plain name.
+pub fn check_label(label: &str) -> Result<(), String> {
+    if label.is_empty()
+        || label.contains(['/', '\\', ':'])
+        || label == "."
+        || label == ".."
+        || label.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "label {label:?} must be a plain file-name part (no path separators)"
+        ));
+    }
+    Ok(())
+}
+
+/// Fail before a long run if a snapshot cannot be written to `path`.
+pub fn check_writable(path: &Path) -> Result<(), String> {
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
+    }
+    let existed = path.exists();
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+    if !existed {
+        let _ = std::fs::remove_file(path);
+    }
+    Ok(())
 }
 
 /// `accrete run` from a fresh world.
@@ -60,7 +98,10 @@ pub fn load(path: &Path, config: Option<Config>, label: &str) -> Simulation {
     if let Some(c) = config {
         if c != sim.config {
             println!("[{label}] config changed from the snapshot's (intervention)");
-            sim.set_config(c);
+            sim.set_config(c).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(2)
+            });
         }
     }
     sim
@@ -74,6 +115,7 @@ pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
     let t1 = Instant::now();
     let tick0 = sim.tick;
     let mut frames: Vec<(Canvas, Canvas)> = Vec::new();
+    let mut extinct = sim.population() == 0;
     if timelapse.contains(&sim.day()) {
         frames.push((
             frame(&sim, Overlay::Biome, 3),
@@ -96,9 +138,12 @@ pub fn drive(mut sim: Simulation, opts: &RunOpts) -> Simulation {
         if opts.snap_every > 0 && d % opts.snap_every == 0 {
             snapshot(&sim, opts.out, &format!("{label}_seed{seed}_day{d:03}"));
         }
-        if sim.population() == 0 {
+        if sim.population() == 0 && !extinct {
+            extinct = true;
             println!("  population extinct on day {d}");
-            break;
+            if opts.stop_on_extinction {
+                break;
+            }
         }
     }
     let secs = t1.elapsed().as_secs_f64();
@@ -333,4 +378,29 @@ pub fn apply_override(config: &Config, kv: &str) -> Config {
     table.insert(key.to_string(), new);
     Config::from_toml_str(&toml::to_string(&doc).expect("toml"))
         .unwrap_or_else(|e| panic!("override {kv}: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn labels_must_be_plain_names() {
+        for ok in ["run", "drought-60", "a_b.2"] {
+            assert!(check_label(ok).is_ok(), "{ok}");
+        }
+        for bad in ["", "a/b", "a\\b", "c:x", ".", "..", "tab\there"] {
+            assert!(check_label(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn unwritable_save_paths_fail_up_front() {
+        assert!(check_writable(Path::new("/dev/null/x.snap.json")).is_err());
+        let dir = std::env::temp_dir().join(format!("accrete-w-{}", std::process::id()));
+        let p = dir.join("sub/ok.snap.json");
+        assert!(check_writable(&p).is_ok());
+        assert!(!p.exists(), "the probe leaves no file behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

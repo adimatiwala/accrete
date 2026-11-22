@@ -134,7 +134,12 @@ Cross-cutting ideas that take several files to see:
 - **Debug vs release:** prefer `--release` for tests. The debug simulation tests are slow (~4 min), but CI runs them because both builds must produce the same hashes.
 - **Viewer lint:** clippy in CI skips `accrete-viewer`, since macroquad rendering may use any float math. That's safe because rendering never feeds back into the simulation. The CLI's image renderer has the only explicit clippy `allow` in the code.
 - **Pinned dependency:** `fontdue` is pinned to 0.9.3 in `Cargo.lock` because 0.9.5 needs rustc 1.87. Edition 2024 with `rust-version = 1.86` keeps the resolver within the pinned toolchain.
-- **Snapshots must stay complete.** `simulation/snapshot.rs` lists every saved field. A new piece of state that affects later ticks or the metrics must be added to `Snapshot` (and to `stable_hash`), and `SNAPSHOT_FORMAT` bumped when the layout changes. Loading recomputes the state hash and rejects a mismatch, and the test `snapshot_at_500_resumes_to_the_golden_state_at_1000` catches anything left out.
+- **Snapshots must stay complete.** `simulation/snapshot.rs` lists every saved field. A new piece of state that affects later ticks or the metrics must be added to `Snapshot` (and to `stable_hash` if it affects behaviour), and `SNAPSHOT_FORMAT` bumped when the layout changes.
+  - **On load,** the state hash and a whole-body hash are both checked.
+  - **Catching omissions:** the test `snapshot_at_500_resumes_to_the_golden_state_at_1000` catches anything left out.
+  - **Layout changes:** the golden `snapshot_seed1_t100` (the file's bytes) fails on any layout change, so re-bless it together with the format bump.
+- **`Simulation::set_config` returns `Result`.** It rejects `[world]` changes and a population cap below the current population.
+- **Debug-only settings stay out of hashes.** `sim.check_invariants` and `sim.event_log_capacity` are excluded from `Config::digest`, and `Config::differs_in_results` ignores them. Keep any new debugging-only setting out of both.
 - **Derived world data is not serialized.** The line-of-sight masks and the tile-to-homes index are rebuilt by `World::rebuild_derived`. Any new derived structure must be rebuilt there too, or it will be missing in scenario worlds and after loading a snapshot.
 - **Memory pools:** the 64 resource-memory slots are split by type (food 40, wood 16, stone 8). One shared pool let abundant wood push out every food memory, and agents starved next to food.
 

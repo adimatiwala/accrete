@@ -69,6 +69,54 @@ fn snapshot_at_500_resumes_to_the_golden_state_at_1000() {
     common::check_golden("state_seed1_t1000", resumed.state_hash());
 }
 
+/// Snapshots taken mid-day, with droughts active, and at the population cap
+/// all resume exactly.
+#[test]
+fn snapshots_resume_exactly_mid_day_in_drought_and_at_the_cap() {
+    let mut c = Config::default();
+    c.weather
+        .scripted
+        .push(accrete_core::config::ScriptedDrought {
+            start_day: 1,
+            days: 10,
+            center: [64, 64],
+            radius: 30,
+            severity: 0.5,
+        });
+    let mut a = Simulation::new(common::PRIMARY_SEED, c);
+    a.run(2 * TICKS_PER_DAY + 13); // mid-day, drought active
+    assert!(!a.weather.active.is_empty());
+    let mut b = Simulation::from_snapshot_json(&a.snapshot_json()).expect("loads");
+    a.run(37);
+    b.run(37);
+    assert_eq!(a.state_hash(), b.state_hash());
+
+    let mut c = Config::default();
+    c.life.population_cap = 105;
+    let mut a = Simulation::new(common::PRIMARY_SEED, c);
+    a.run(30 * TICKS_PER_DAY);
+    assert!(a.hit_cap, "reached the cap");
+    let mut b = Simulation::from_snapshot_json(&a.snapshot_json()).expect("loads");
+    a.run(48);
+    b.run(48);
+    assert_eq!(a.state_hash(), b.state_hash());
+    assert!(b.population() as u32 <= 105);
+}
+
+/// The snapshot file's bytes are pinned: any change to the serialized layout
+/// or to what a field means shows up here, and must come with a deliberate
+/// `SNAPSHOT_FORMAT` bump (and a re-bless). Shared by macOS and Windows.
+#[test]
+fn golden_snapshot_bytes() {
+    let mut sim = Simulation::new(common::PRIMARY_SEED, Config::default());
+    sim.run(100);
+    let json = sim.snapshot_json();
+    common::check_golden(
+        "snapshot_seed1_t100",
+        accrete_core::hash::fnv1a64(json.as_bytes()),
+    );
+}
+
 /// An intervention branch changes only world conditions: both branches
 /// start from the same snapshot, keep identical random droughts (the
 /// `weather` stream is untouched by scripted droughts), and diverge only
@@ -92,7 +140,7 @@ fn branches_from_one_snapshot_diverge_only_by_the_intervention() {
             radius: 40,
             severity: 0.9,
         });
-    drought.set_config(cfg);
+    drought.set_config(cfg).expect("valid intervention");
     control.run(15 * TICKS_PER_DAY);
     drought.run(15 * TICKS_PER_DAY);
 
@@ -105,7 +153,27 @@ fn branches_from_one_snapshot_diverge_only_by_the_intervention() {
             .collect::<Vec<_>>()
     };
     assert_eq!(random(&control), random(&drought), "same random droughts");
-    assert!(drought.weather.history.iter().any(|d| d.scripted));
+    let scripted: Vec<_> = drought
+        .weather
+        .history
+        .iter()
+        .filter(|d| d.scripted)
+        .collect();
+    assert_eq!(scripted.len(), 1);
+    assert_eq!(
+        scripted[0].start_day, 10,
+        "starts on the snapshot day itself"
+    );
+    let area = |s: &Simulation, day: u32| {
+        s.metrics
+            .iter()
+            .find(|m| m.day == day)
+            .map(|m| m.drought_area)
+    };
+    assert!(
+        area(&drought, 11).unwrap() > area(&control, 11).unwrap(),
+        "visible in the next day's metrics"
+    );
     assert_eq!(control.rng_weather, drought.rng_weather);
     assert_ne!(control.state_hash(), drought.state_hash());
     assert!(

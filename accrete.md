@@ -1147,3 +1147,25 @@ This entry also covers the CLAUDE.md change that was merged before this changelo
 * A saved and reloaded snapshot re-serializes byte-identically.
 * A straight 300-day run of seed 1 and a run saved at day 100 and resumed both end on hash `04841f5e6f62a0cf`.
 * In a first branch on seed 1, a drought from day 100 for 120 days (radius 24, severity 0.6) ended at day 300 with 483 people against 513 in the control, 2 hamlets against 3, and slightly longer foraging trips. That is one seed and one intervention, not yet a finding.
+
+**Review fixes** (from a review agent's pass over this PR; restore itself held up, with mid-day, in-drought, at-the-cap and post-extinction snapshots all resuming bit-identically):
+* **Extinct branches.** When one branch died out, the comparison CSV stopped at that day and the summary compared different days. Branches now keep running after extinction (population 0), rows are aligned by day with empty cells for a missing side, and the summary names both days if they differ.
+* **Labels.** A label containing `/` panicked after the control had run, and identical labels silently overwrote each other's files. Labels are validated before anything runs, and `branch` rejects identical labels.
+* **Population cap.** Lowering it below the current population tripped the invariant check. `set_config` now returns an error for that, and for any change to `[world]`, which is already generated.
+* **Unloadable files.** A NaN anywhere in the state was saved as JSON `null`, giving a file that could never be loaded. `save_snapshot` now checks that the file loads back to the same state before writing it.
+* **Late save errors.** An unwritable `--save` path was only reported after the run. It is now checked first.
+* **Partial integrity check.** The state hash does not cover metrics, the ledger, settlement tracking and other bookkeeping, so edits to those loaded silently. Snapshots now also carry a hash of their whole JSON body, checked on load. A file from a build with a different config schema is reported as such, not as "modified".
+* **Debug settings counted as interventions.** `--check` and the event-log size changed the config digest, so a resumed run with `--check` was reported as an intervention and hashed differently. `Config::digest` now ignores debugging-only settings. No golden hash changed, because default runs use the defaults.
+* **Pinned layout.** The snapshot file's bytes for seed 1 at tick 100 are now a golden value, so any change to the layout or a field's meaning forces a deliberate `SNAPSHOT_FORMAT` bump.
+* **CLI checks:** `--seed` with `--load` is rejected; zero-day droughts are rejected; a drought starting after the branches end gets a warning.
+* **New tests:**
+  * body-hash rejection of edited metrics and ledger;
+  * schema messages;
+  * refusing non-finite state;
+  * `set_config` validation;
+  * debug settings not changing hashes;
+  * mid-day, in-drought and at-cap resumes;
+  * golden snapshot bytes;
+  * a drought starting on the snapshot day taking effect the next day;
+  * label and save-path checks;
+  * day-aligned comparison rows.

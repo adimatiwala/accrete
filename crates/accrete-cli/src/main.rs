@@ -49,8 +49,9 @@ enum Cmd {
     },
     /// Run the simulation headlessly and export metrics.
     Run {
-        /// One or more seeds (comma separated). Ignored with `--load`.
-        #[arg(long, default_value = "1", value_delimiter = ',')]
+        /// One or more seeds (comma separated; default 1). Not allowed with
+        /// `--load`, which resumes the snapshot's own world.
+        #[arg(long, value_delimiter = ',')]
         seed: Vec<String>,
         /// Number of days to simulate (from the snapshot's day with `--load`).
         #[arg(long, default_value_t = 100)]
@@ -165,6 +166,12 @@ enum Cmd {
     },
 }
 
+/// Print an error and exit with status 2 (bad arguments).
+fn fail(msg: &str) -> ! {
+    eprintln!("error: {msg}");
+    std::process::exit(2)
+}
+
 fn load_config(path: &Option<PathBuf>) -> Config {
     match path {
         None => Config::default(),
@@ -193,6 +200,10 @@ fn main() {
             label,
             timelapse,
         } => {
+            run::check_label(&label).unwrap_or_else(|e| fail(&e));
+            if let Some(path) = &save {
+                run::check_writable(path).unwrap_or_else(|e| fail(&e));
+            }
             let opts = run::RunOpts {
                 days,
                 out: &out,
@@ -201,8 +212,12 @@ fn main() {
                 label: &label,
                 timelapse: &timelapse,
                 save: save.as_deref(),
+                stop_on_extinction: true,
             };
             if let Some(path) = load {
+                if !seed.is_empty() {
+                    fail("--seed cannot be combined with --load: the snapshot fixes the world");
+                }
                 // Start from the snapshot's own config; --config replaces it
                 // and --set adjusts it (either one makes an intervention).
                 let snap = run::load(&path, None, &label);
@@ -217,8 +232,10 @@ fn main() {
                 c.sim.check_invariants |= check;
                 let mut sim = snap;
                 if c != sim.config {
-                    println!("[{label}] config changed from the snapshot's (intervention)");
-                    sim.set_config(c);
+                    if sim.config.differs_in_results(&c) {
+                        println!("[{label}] config changed from the snapshot's (intervention)");
+                    }
+                    sim.set_config(c).unwrap_or_else(|e| fail(&e));
                 }
                 run::drive(sim, &opts);
             } else {
@@ -227,11 +244,15 @@ fn main() {
                     config = run::apply_override(&config, kv);
                 }
                 config.sim.check_invariants |= check;
-                if save.is_some() && seed.len() > 1 {
-                    eprintln!("error: --save needs a single seed");
-                    std::process::exit(2);
+                let seeds = if seed.is_empty() {
+                    vec!["1".to_string()]
+                } else {
+                    seed
+                };
+                if save.is_some() && seeds.len() > 1 {
+                    fail("--save needs a single seed");
                 }
-                for s in seed {
+                for s in seeds {
                     run::run(parse_seed(&s), &config, &opts);
                 }
             }

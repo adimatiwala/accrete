@@ -17,10 +17,15 @@
 //! - pathfinding scratch buffers.
 //!
 //! Floats round-trip exactly (`serde_json` is built with `float_roundtrip`),
-//! so a loaded simulation continues bit-identically, on any platform. Every
-//! snapshot records the state hash at save time, and loading recomputes it: a
-//! file that was edited, truncated, or written by an incompatible version is
-//! rejected instead of silently diverging.
+//! so a loaded simulation continues bit-identically, on any platform.
+//!
+//! Integrity: every snapshot records the simulation's state hash and a hash
+//! of its whole serialized body (metrics, ledger, settlements and other
+//! bookkeeping included). Loading checks both, so a file that was edited,
+//! truncated, or written by an incompatible build is rejected instead of
+//! silently diverging, with a clear message when the config schema differs.
+//! Saving checks that the file will load (JSON cannot hold NaN or infinity),
+//! so an unloadable snapshot is never written.
 
 use std::path::Path;
 
@@ -50,6 +55,10 @@ pub struct Snapshot {
     pub accrete_version: String,
     /// State hash at save time (hex); checked again on load.
     pub state_hash: String,
+    /// FNV-1a hash (hex) of this snapshot's JSON with `state_hash` and
+    /// `body_hash` empty; covers every saved field. Checked on load.
+    #[serde(default)]
+    pub body_hash: String,
     pub tick: u64,
     pub config: Config,
     pub world: World,
@@ -79,6 +88,7 @@ impl Simulation {
             format: SNAPSHOT_FORMAT,
             accrete_version: env!("CARGO_PKG_VERSION").to_string(),
             state_hash: hash::hex(self.state_hash()),
+            body_hash: String::new(),
             tick: self.tick,
             config: self.config.clone(),
             world: self.world.clone(),
@@ -143,25 +153,63 @@ impl Simulation {
         Ok(sim)
     }
 
-    /// Serialize the current state to JSON.
+    /// Serialize the current state to JSON (with its body hash filled in).
     pub fn snapshot_json(&self) -> String {
-        serde_json::to_string(&self.snapshot()).expect("snapshot serializes")
+        let mut s = self.snapshot();
+        s.body_hash = body_hash(&s);
+        serde_json::to_string(&s).expect("snapshot serializes")
     }
 
     /// Restore from JSON produced by [`Simulation::snapshot_json`].
     pub fn from_snapshot_json(text: &str) -> Result<Self, String> {
-        let s: Snapshot =
-            serde_json::from_str(text).map_err(|e| format!("snapshot does not parse: {e}"))?;
+        let s: Snapshot = match serde_json::from_str(text) {
+            Ok(s) => s,
+            Err(e) => {
+                // Name the likely cause when the file's layout is foreign.
+                let version = serde_json::from_str::<serde_json::Value>(text)
+                    .ok()
+                    .and_then(|v| v.get("accrete_version")?.as_str().map(str::to_string));
+                return Err(match version {
+                    Some(v) => format!(
+                        "snapshot does not parse with this build (written by accrete {v}; \
+                         the layout or config schema differs): {e}"
+                    ),
+                    None => format!("snapshot does not parse: {e}"),
+                });
+            }
+        };
+        if s.format == SNAPSHOT_FORMAT && !s.body_hash.is_empty() {
+            let expected = body_hash(&s);
+            if expected != s.body_hash {
+                return Err(body_mismatch(text, &s));
+            }
+        }
         Self::from_snapshot(s)
     }
 
-    /// Write a snapshot file (conventionally `*.snap.json`).
+    /// Write a snapshot file (conventionally `*.snap.json`). The file is
+    /// checked to load back to the same state before it is written, so a
+    /// state that JSON cannot represent (NaN or infinity) is an error here
+    /// rather than an unloadable file later.
     pub fn save_snapshot(&self, path: &Path) -> Result<(), String> {
+        let json = self.snapshot_json();
+        let back = Self::from_snapshot_json(&json).map_err(|e| {
+            format!(
+                "refusing to write {}: the state does not round-trip ({e}); \
+                 a NaN or infinite value is the usual cause",
+                path.display()
+            )
+        })?;
+        if back.state_hash() != self.state_hash() {
+            return Err(format!(
+                "refusing to write {}: the state does not round-trip exactly",
+                path.display()
+            ));
+        }
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
         }
-        std::fs::write(path, self.snapshot_json())
-            .map_err(|e| format!("writing {}: {e}", path.display()))
+        std::fs::write(path, json).map_err(|e| format!("writing {}: {e}", path.display()))
     }
 
     /// Read and restore a snapshot file.
@@ -175,11 +223,74 @@ impl Simulation {
     /// example adding a scripted drought, or changing a regrowth rate).
     /// Per-tick rates and derived world data are rebuilt from the new config.
     /// Interventions act only through the config, never on agents directly.
-    pub fn set_config(&mut self, config: Config) {
+    ///
+    /// Rejected: a different `[world]` section (the world already exists),
+    /// and a population cap below the current population.
+    pub fn set_config(&mut self, config: Config) -> Result<(), String> {
+        if config.world != self.config.world {
+            return Err(
+                "the [world] config cannot change mid-run: the world is already generated".into(),
+            );
+        }
+        if (self.agents.len() as u32) > config.life.population_cap {
+            return Err(format!(
+                "life.population_cap {} is below the current population {}",
+                config.life.population_cap,
+                self.agents.len()
+            ));
+        }
         self.rates = TickRates::new(&config);
         self.world.rebuild_derived(&config);
         self.events = EventLog::new(config.sim.event_log_capacity);
         self.config = config;
+        Ok(())
+    }
+}
+
+/// Hash of a snapshot's JSON with both hash fields empty.
+fn body_hash(s: &Snapshot) -> String {
+    let mut blank = s.clone();
+    blank.state_hash = String::new();
+    blank.body_hash = String::new();
+    let json = serde_json::to_string(&blank).expect("snapshot serializes");
+    hash::hex(hash::fnv1a64(json.as_bytes()))
+}
+
+/// Explain a body-hash mismatch: a different config schema (the file's
+/// config does not re-serialize to itself) or a modified file.
+fn body_mismatch(text: &str, s: &Snapshot) -> String {
+    let file_config = serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|v| v.get("config").cloned());
+    let ours = serde_json::to_value(&s.config).ok();
+    let schema_differs = match (&file_config, &ours) {
+        (Some(f), Some(o)) => !same_keys(f, o),
+        _ => false,
+    };
+    if schema_differs {
+        format!(
+            "snapshot was written with a different config schema (accrete {}); \
+             it cannot be resumed exactly with this build",
+            s.accrete_version
+        )
+    } else {
+        "snapshot contents do not match their hash: the file was modified or truncated".into()
+    }
+}
+
+/// Whether two JSON values have the same structure of object keys (the
+/// config *schema*), ignoring the values themselves.
+fn same_keys(a: &serde_json::Value, b: &serde_json::Value) -> bool {
+    use serde_json::Value::{Array, Object};
+    match (a, b) {
+        (Object(x), Object(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(k, v)| y.get(k).is_some_and(|w| same_keys(v, w)))
+        }
+        (Array(x), Array(y)) => x.len() == y.len() && x.iter().zip(y).all(|(v, w)| same_keys(v, w)),
+        (Object(_), _) | (_, Object(_)) => false,
+        _ => true,
     }
 }
 
@@ -234,5 +345,97 @@ mod tests {
             .err()
             .expect("rejected");
         assert!(e.contains("does not parse"), "{e}");
+    }
+
+    #[test]
+    fn body_hash_catches_edited_bookkeeping() {
+        let mut sim = Simulation::new(3, short_config());
+        sim.run(24 * 2);
+        let good = sim.snapshot_json();
+        for (what, from, to) in [
+            ("metrics", "\"population\":", "\"population\":1"),
+            ("ledger", "\"eaten\":", "\"eaten\":1"),
+        ] {
+            let bad = good.replacen(from, to, 1);
+            assert_ne!(bad, good, "{what} edit applied");
+            let e = Simulation::from_snapshot_json(&bad)
+                .err()
+                .expect("rejected");
+            assert!(
+                e.contains("do not match their hash") || e.contains("does not parse"),
+                "{what}: {e}"
+            );
+        }
+        assert!(Simulation::from_snapshot_json(&good).is_ok());
+    }
+
+    #[test]
+    fn a_foreign_config_schema_is_named_as_such() {
+        let sim = Simulation::new(3, short_config());
+        let good = sim.snapshot_json();
+        // A file from a newer build, with a config key this build lacks.
+        let bad = good.replacen(
+            "\"seasons_amplitude\":",
+            "\"new_setting\":1,\"seasons_amplitude\":",
+            1,
+        );
+        assert_ne!(bad, good);
+        let e = Simulation::from_snapshot_json(&bad)
+            .err()
+            .expect("rejected");
+        assert!(
+            e.contains("written by accrete") && e.contains("schema"),
+            "{e}"
+        );
+        // A key missing from an older file is filled with its default; when
+        // the run used the default anyway the state is identical and loads.
+        let older = good.replacen("\"seasons_amplitude\":0.0,", "", 1);
+        assert_ne!(older, good);
+        assert!(Simulation::from_snapshot_json(&older).is_ok());
+    }
+
+    #[test]
+    fn non_finite_state_is_refused_at_save_time() {
+        let mut c = short_config();
+        c.weather.seasons_amplitude = f32::NAN;
+        let sim = Simulation::new(3, c);
+        let path =
+            std::env::temp_dir().join(format!("accrete-nan-{}.snap.json", std::process::id()));
+        let e = sim.save_snapshot(&path).expect_err("refused");
+        assert!(e.contains("round-trip"), "{e}");
+        assert!(!path.exists(), "no unloadable file was written");
+    }
+
+    #[test]
+    fn set_config_rejects_world_changes_and_a_cap_below_the_population() {
+        let mut sim = Simulation::new(3, short_config());
+        let mut c = sim.config.clone();
+        c.world.width += 1;
+        assert!(sim.set_config(c).unwrap_err().contains("[world]"));
+        let mut c = sim.config.clone();
+        c.life.population_cap = sim.population() as u32 - 1;
+        assert!(sim.set_config(c).unwrap_err().contains("population_cap"));
+        let mut c = sim.config.clone();
+        c.resources.food_regrowth *= 0.5;
+        assert!(sim.set_config(c).is_ok());
+    }
+
+    /// Turning on per-tick checks (or resizing the event log) is not an
+    /// intervention: the state hash is unchanged and a resumed run with
+    /// `--check` matches an uninterrupted one.
+    #[test]
+    fn debug_settings_do_not_change_results_or_hashes() {
+        let mut plain = Simulation::new(3, Config::default());
+        plain.run(60);
+        let mut checked = Simulation::from_snapshot_json(&plain.snapshot_json()).expect("loads");
+        let mut c = checked.config.clone();
+        c.sim.check_invariants = true;
+        c.sim.event_log_capacity = 7;
+        assert!(!c.differs_in_results(&checked.config));
+        checked.set_config(c).expect("ok");
+        assert_eq!(checked.state_hash(), plain.state_hash());
+        plain.run(48);
+        checked.run(48);
+        assert_eq!(checked.state_hash(), plain.state_hash());
     }
 }

@@ -46,11 +46,30 @@ impl Config {
         toml::to_string_pretty(self).expect("config serializes")
     }
 
-    /// Hash of the full configuration, via its canonical JSON form. Floats
+    /// Hash of the configuration, via its canonical JSON form. Floats
     /// serialize with round-trip precision, and field order is the struct's.
+    /// Debugging-only settings that never change results
+    /// (`sim.check_invariants`, `sim.event_log_capacity`) are excluded, so
+    /// turning on `--check` does not change the state hash.
     pub fn digest(&self) -> u64 {
-        let json = serde_json::to_string(self).expect("config serializes");
+        let json =
+            serde_json::to_string(&self.without_debug_settings()).expect("config serializes");
         crate::hash::fnv1a64(json.as_bytes())
+    }
+
+    /// This config with the debugging-only settings reset to their defaults.
+    pub fn without_debug_settings(&self) -> Config {
+        let mut c = self.clone();
+        let d = SimConfig::default();
+        c.sim.check_invariants = d.check_invariants;
+        c.sim.event_log_capacity = d.event_log_capacity;
+        c
+    }
+
+    /// Whether `other` differs from this config in anything that affects
+    /// results (debugging-only settings are ignored).
+    pub fn differs_in_results(&self, other: &Config) -> bool {
+        self.without_debug_settings() != other.without_debug_settings()
     }
 }
 

@@ -45,9 +45,13 @@ pub fn parse_drought(s: &str) -> Result<ScriptedDrought, String> {
             "--drought severity must be in 0..=1, got {severity}"
         ));
     }
+    let days = u(1)?;
+    if days == 0 {
+        return Err("--drought DAYS must be at least 1".into());
+    }
     Ok(ScriptedDrought {
         start_day: u(0)?,
-        days: u(1)?,
+        days,
         center: [i(2)?, i(3)?],
         radius: u(4)?,
         severity,
@@ -55,9 +59,23 @@ pub fn parse_drought(s: &str) -> Result<ScriptedDrought, String> {
 }
 
 pub fn branch(a: BranchArgs) {
+    let fail = |msg: String| -> ! {
+        eprintln!("error: {msg}");
+        std::process::exit(2)
+    };
+    for l in [&a.label_a, &a.label_b] {
+        run::check_label(l).unwrap_or_else(|e| fail(e));
+    }
+    if a.label_a == a.label_b {
+        fail(format!(
+            "--label-a and --label-b are both {:?}; their output files would overwrite each other",
+            a.label_a
+        ));
+    }
     std::fs::create_dir_all(&a.out).expect("create output dir");
     let mut control = run::load(&a.load, None, &a.label_a);
     let start_day = control.day();
+    let end_day = start_day + a.days;
 
     // Intervention config: the snapshot's config (or --config-b), then
     // overrides, then extra scripted droughts.
@@ -78,9 +96,15 @@ pub fn branch(a: BranchArgs) {
             );
             std::process::exit(2);
         }
+        if d.start_day >= end_day {
+            eprintln!(
+                "warning: drought starts on day {} but the branches stop on day {end_day}; it will not happen",
+                d.start_day
+            );
+        }
         cfg.weather.scripted.push(d);
     }
-    if cfg == control.config {
+    if !cfg.differs_in_results(&control.config) {
         eprintln!(
             "warning: the intervention has the same config as the control, so the branches will be identical"
         );
@@ -98,6 +122,7 @@ pub fn branch(a: BranchArgs) {
             label: &a.label_a,
             timelapse: &[],
             save: None,
+            stop_on_extinction: false,
         },
     );
     intervention = run::drive(
@@ -110,6 +135,7 @@ pub fn branch(a: BranchArgs) {
             label: &a.label_b,
             timelapse: &[],
             save: None,
+            stop_on_extinction: false,
         },
     );
 
@@ -160,15 +186,28 @@ pub fn compare_csv(a: &Simulation, b: &Simulation, from_day: u32, la: &str, lb: 
         let _ = write!(s, ",{name}_{la},{name}_{lb},{name}_diff");
     }
     s.push('\n');
-    for (ma, mb) in a.metrics.iter().zip(&b.metrics) {
-        debug_assert_eq!(ma.day, mb.day);
-        if ma.day <= from_day {
-            continue;
-        }
-        let _ = write!(s, "{}", ma.day);
+    // Align by day; a day missing on one side leaves its cells empty.
+    fn by_day(sim: &Simulation) -> std::collections::BTreeMap<u32, &DailyMetrics> {
+        sim.metrics.iter().map(|m| (m.day, m)).collect()
+    }
+    let (da, db) = (by_day(a), by_day(b));
+    let days: std::collections::BTreeSet<u32> = da.keys().chain(db.keys()).copied().collect();
+    for day in days.into_iter().filter(|&d| d > from_day) {
+        let _ = write!(s, "{day}");
         for (_, f) in COLUMNS {
-            let (x, y) = (f(ma), f(mb));
-            let _ = write!(s, ",{x},{y},{}", y - x);
+            match (da.get(&day), db.get(&day)) {
+                (Some(ma), Some(mb)) => {
+                    let (x, y) = (f(ma), f(mb));
+                    let _ = write!(s, ",{x},{y},{}", y - x);
+                }
+                (Some(ma), None) => {
+                    let _ = write!(s, ",{},,", f(ma));
+                }
+                (None, Some(mb)) => {
+                    let _ = write!(s, ",,{},", f(mb));
+                }
+                (None, None) => unreachable!("day came from one of the two maps"),
+            }
         }
         s.push('\n');
     }
@@ -179,7 +218,11 @@ fn print_comparison(a: &Simulation, b: &Simulation, la: &str, lb: &str) {
     let (Some(ma), Some(mb)) = (a.metrics.last(), b.metrics.last()) else {
         return;
     };
-    println!("  day {}: {la} vs {lb}", ma.day);
+    if ma.day == mb.day {
+        println!("  day {}: {la} vs {lb}", ma.day);
+    } else {
+        println!("  {la} (day {}) vs {lb} (day {})", ma.day, mb.day);
+    }
     for (name, f) in COLUMNS {
         let (x, y) = (f(ma), f(mb));
         println!("    {name:<22} {x:>10.2} {y:>10.2}   diff {:>+10.2}", y - x);
@@ -201,5 +244,39 @@ mod tests {
         assert!(parse_drought("100:200:64:60:20").is_err());
         assert!(parse_drought("100:200:64:60:20:1.5").is_err());
         assert!(parse_drought("a:200:64:60:20:0.5").is_err());
+    }
+
+    #[test]
+    fn comparison_rows_line_up_by_day_when_a_branch_ends_early() {
+        use accrete_core::simulation::metrics::DailyMetrics;
+        let world = accrete_core::scenario::Scenario::from_toml_str(
+            "name = \"tiny\"\nmap = \"\"\"\n...\n\"\"\"\n",
+        )
+        .unwrap()
+        .world(&Default::default())
+        .unwrap();
+        let mut a = Simulation::from_world(world.clone(), Default::default());
+        let mut b = Simulation::from_world(world, Default::default());
+        let row = |day: u32, population: u32| DailyMetrics {
+            day,
+            population,
+            ..DailyMetrics::default()
+        };
+        a.metrics = (1..=5).map(|d| row(d, 10)).collect();
+        b.metrics = (1..=3).map(|d| row(d, 7)).collect();
+        let csv = compare_csv(&a, &b, 1, "control", "x");
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines.len(), 1 + 4, "header + days 2..=5");
+        assert!(lines[1].starts_with("2,10,7,-3"), "{}", lines[1]);
+        assert!(
+            lines[4].starts_with("5,10,,"),
+            "missing side left empty: {}",
+            lines[4]
+        );
+    }
+
+    #[test]
+    fn zero_day_droughts_are_rejected() {
+        assert!(parse_drought("100:0:64:60:20:0.6").is_err());
     }
 }
