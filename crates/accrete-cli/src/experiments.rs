@@ -2,11 +2,12 @@
 //!
 //! Three paired ablations on the same seed(s), each from a fresh world:
 //! - **trade:** barter off
-//! - **trails:** worn-trail travel discounts off (traffic is still counted)
+//! - **trails:** trail formation off (traffic is still counted)
 //! - **selfish:** household road weight 0 and reciprocity off
 //!
 //! The control for a seed is run once and reused. Each pair writes a per-day
-//! comparison CSV; the suite also writes a summary table of final-day metrics.
+//! comparison CSV; the suite also writes `emergence_summary.csv` (cumulative
+//! trades; other metrics final-day).
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -35,7 +36,7 @@ pub const EXPERIMENTS: &[Experiment] = &[
     Experiment {
         name: "trails",
         label: "no-trails",
-        description: "worn trails do not reduce movement cost (trails.enabled = false)",
+        description: "trail formation disabled; traffic still counted (trails.enabled = false)",
         apply: |c| c.trails.enabled = false,
     },
     Experiment {
@@ -59,7 +60,7 @@ pub struct ExperimentsArgs {
     pub only: Vec<String>,
 }
 
-/// Resolve `--only` names to experiments, or all of them.
+/// Resolve `--only` names to experiments, or all of them. Duplicates are dropped.
 pub fn select(only: &[String]) -> Result<Vec<&'static Experiment>, String> {
     if only.is_empty() {
         return Ok(EXPERIMENTS.iter().collect());
@@ -76,25 +77,29 @@ pub fn select(only: &[String]) -> Result<Vec<&'static Experiment>, String> {
                     .join(", ")
             ));
         };
-        out.push(e);
+        if !out.iter().any(|x: &&Experiment| x.name == e.name) {
+            out.push(e);
+        }
     }
     Ok(out)
 }
 
+fn fail(msg: impl std::fmt::Display) -> ! {
+    eprintln!("error: {msg}");
+    std::process::exit(2)
+}
+
 pub fn run_suite(base: &Config, a: ExperimentsArgs) {
-    let experiments = select(&a.only).unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(2)
-    });
-    run::check_label("control").unwrap_or_else(|e| {
-        eprintln!("error: {e}");
-        std::process::exit(2)
-    });
+    if a.seeds.is_empty() {
+        fail("provide at least one --seed");
+    }
+    if a.days == 0 {
+        fail("--days must be at least 1");
+    }
+    let experiments = select(&a.only).unwrap_or_else(|e| fail(e));
+    run::check_label("control").unwrap_or_else(|e| fail(e));
     for e in &experiments {
-        run::check_label(e.label).unwrap_or_else(|err| {
-            eprintln!("error: {err}");
-            std::process::exit(2)
-        });
+        run::check_label(e.label).unwrap_or_else(|err| fail(err));
     }
     std::fs::create_dir_all(&a.out).expect("create output dir");
 
@@ -143,11 +148,13 @@ pub fn run_suite(base: &Config, a: ExperimentsArgs) {
             let mut cfg = base.clone();
             (e.apply)(&mut cfg);
             cfg.sim.check_invariants |= a.check;
-            assert!(
-                cfg.differs_in_results(&control_cfg),
-                "experiment {} must change results",
-                e.name
-            );
+            if !cfg.differs_in_results(&control_cfg) {
+                fail(format!(
+                    "experiment {} does not change results under this base config \
+                     (is the ablation already applied via --set / --config?)",
+                    e.name
+                ));
+            }
             let intervention = run::run(
                 seed,
                 &cfg,
@@ -270,6 +277,15 @@ mod tests {
     fn select_rejects_unknown_names() {
         assert!(select(&["trade".into()]).is_ok());
         assert!(select(&["nope".into()]).is_err());
+    }
+
+    #[test]
+    fn select_dedupes_preserving_order() {
+        let got = select(&["selfish".into(), "trade".into(), "selfish".into()]).unwrap();
+        assert_eq!(
+            got.iter().map(|e| e.name).collect::<Vec<_>>(),
+            ["selfish", "trade"]
+        );
     }
 
     #[test]

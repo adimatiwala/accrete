@@ -1275,7 +1275,7 @@ The three paired ablations from the Day 5 plan, as `accrete experiments`:
 | Experiment | Intervention | What it measures |
 |---|---|---|
 | `trade` | `social.trade_enabled = false` | Whether barter changes population, foraging, and clustering |
-| `trails` | `trails.enabled = false` | Whether worn-trail travel discounts thicken the path network and shorten trips |
+| `trails` | `trails.enabled = false` (formation off; traffic still counted) | Whether worn trails thicken the path network and shorten trips |
 | `selfish` | `infrastructure.household_weight = 0` and `social.reciprocity_enabled = false` | Whether household concern and reciprocity change outcomes |
 
 **Design:**
@@ -1296,4 +1296,9 @@ The Week 3 behavioural scenarios (complementary and identical trade, reciprocity
 
 One seed and 100 days, not yet a finding. Phase 2 (Section 9) is multi-seed averages.
 
-**Tests:** each ablation changes the config; `--only` rejects unknown names; a 40-day paired run on seed 1 diverges for every experiment, with zero trades under `no-trade` and zero trail tiles under `no-trails`.
+**Tests:** each ablation changes the config; `--only` rejects unknown names and dedupes; a 40-day paired run on seed 1 diverges for every experiment, with zero trades under `no-trade` and zero trail tiles under `no-trails`.
+
+**Review fixes:**
+* `--days 0` and an empty seed list are rejected before any run.
+* An ablation that is a no-op under the base config (e.g. `--set social.trade_enabled=false` then `--only trade`) exits with an error instead of panicking on `assert!`.
+* `--only` duplicates are dropped in order; the trails description matches what `trails.enabled` actually does (formation, not a separate cost gate).
