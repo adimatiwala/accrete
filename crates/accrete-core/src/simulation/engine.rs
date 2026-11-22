@@ -1979,8 +1979,7 @@ fn home_sighting(world: &World, hid: HomeId, base_capacity: u32) -> HomeSighting
         residents: h.residents.len() as u32,
         has_storage: !h.chests.is_empty(),
         comfortable: h.comfortable_capacity(base_capacity),
-        // `homes_on` is empty on worlds without a tile index (some scenarios),
-        // where every home counts as its own tile.
+        // A home always counts itself, even if the tile index is not built yet.
         tile_homes: (world.homes_on(h.pos).len() as u32).max(1),
     }
 }
