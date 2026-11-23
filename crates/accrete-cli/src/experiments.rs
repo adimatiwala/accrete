@@ -82,6 +82,27 @@ pub const EXPERIMENTS: &[Experiment] = &[
         description: "payoff-biased social learning enabled (culture.enabled = true; research program H5)",
         apply: |c| c.culture.enabled = true,
     },
+    Experiment {
+        name: "markets",
+        label: "markets",
+        description: "remembered trading places (markets.enabled = true; A.33)",
+        apply: |c| c.markets.enabled = true,
+    },
+    Experiment {
+        name: "public_roads",
+        label: "public_roads",
+        description: "roads valued for everyone's traffic (infrastructure.public_weight = 1; A.33)",
+        apply: |c| c.infrastructure.public_weight = 1.0,
+    },
+    Experiment {
+        name: "cities",
+        label: "cities",
+        description: "markets and public roads together (A.33)",
+        apply: |c| {
+            c.markets.enabled = true;
+            c.infrastructure.public_weight = 1.0;
+        },
+    },
 ];
 
 /// Columns of `emergence_summary.csv`. `trades_*` and `total_*` columns are
@@ -358,6 +379,16 @@ pub const OUTCOMES: &[Outcome] = &[
     ("moran_diligence", |s| f64::from(last(s).moran_diligence)),
     ("mean_caution", |s| f64::from(last(s).mean_caution)),
     ("mean_sociability", |s| f64::from(last(s).mean_sociability)),
+    // Cities (A.33).
+    ("villages", |s| f64::from(last(s).villages)),
+    ("largest_settlement", |s| {
+        f64::from(last(s).largest_settlement)
+    }),
+    ("market_places", |s| f64::from(last(s).market_places)),
+    ("trade_tiles_30d", |s| f64::from(last(s).trade_tiles_30d)),
+    ("trade_tile_hhi_30d", |s| {
+        f64::from(last(s).trade_tile_hhi_30d)
+    }),
 ];
 
 /// Zipf exponent of home-cluster sizes (residents) at the final state: minus

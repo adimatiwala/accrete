@@ -219,7 +219,7 @@ pub fn render_tiles(world: &World, config: &Config, overlay: Overlay) -> Vec<Rgb
 
 /// A distinct, stable color per goal category, for agent dots.
 pub fn goal_color(index: usize) -> Rgb {
-    const PALETTE: [Rgb; 14] = [
+    const PALETTE: [Rgb; 16] = [
         [255, 255, 255], // idle
         [250, 220, 60],  // explore
         [255, 150, 40],  // food
@@ -234,6 +234,8 @@ pub fn goal_color(index: usize) -> Rgb {
         [255, 60, 160],  // reproduce
         [230, 200, 150], // improve trail
         [170, 255, 120], // improve shelter
+        [80, 230, 255],  // craft
+        [255, 215, 80],  // market
     ];
     PALETTE[index % PALETTE.len()]
 }

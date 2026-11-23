@@ -1260,6 +1260,19 @@ impl App {
         }
     }
 
+    /// Trading places with a score of at least 2 in anyone's memory, with the
+    /// highest score anyone remembers (presentation only).
+    fn market_places(&self) -> Vec<(Pos, f32)> {
+        let mut best: std::collections::BTreeMap<Pos, f32> = std::collections::BTreeMap::new();
+        for a in &self.sim.agents {
+            for s in a.memory.trade_spots.iter().filter(|s| s.score >= 2.0) {
+                let e = best.entry(s.pos).or_insert(0.0);
+                *e = e.max(s.score);
+            }
+        }
+        best.into_iter().collect()
+    }
+
     /// The 3D diorama: sky, terrain, homes, people, effects, sea, labels.
     fn draw_3d(&self) {
         let area = self.map_area();
@@ -1301,7 +1314,9 @@ impl App {
         for home in &self.sim.world.homes {
             let (x, z) = (home.pos.x as f32 + 0.5, home.pos.y as f32 + 0.5);
             let y = self.view3d.height_at(x, z).max(0.0);
-            let s = 0.9 + 0.12 * f32::from(home.shelter_level);
+            // Size follows the household: residents and shelter level.
+            let people = home.residents.len().min(10) as f32;
+            let s = 0.8 + 0.06 * people + 0.12 * f32::from(home.shelter_level);
             let (walls, roof) = if home.is_vacant() {
                 (
                     Color::from_rgba(150, 146, 140, 255),
@@ -1313,9 +1328,23 @@ impl App {
                     Color::from_rgba(186, 72, 52, 255),
                 )
             };
-            mb.cuboid(vec3(x, y - 0.1, z), vec3(0.7 * s, 0.6 * s, 0.7 * s), walls);
+            let storeys = if people >= 6.0 || home.shelter_level >= 2 {
+                2.0
+            } else {
+                1.0
+            };
+            let h = 0.55 * s * storeys;
+            mb.cuboid(vec3(x, y - 0.1, z), vec3(0.7 * s, h + 0.1, 0.7 * s), walls);
+            if storeys > 1.0 {
+                // A band between storeys.
+                mb.cuboid(
+                    vec3(x, y + 0.5 * h - 0.05, z),
+                    vec3(0.74 * s, 0.08, 0.74 * s),
+                    Color::from_rgba(170, 150, 120, 255),
+                );
+            }
             mb.cone(
-                vec3(x, y + 0.5 * s, z),
+                vec3(x, y + h, z),
                 0.62 * s,
                 0.5 * s,
                 4,
@@ -1324,11 +1353,70 @@ impl App {
             );
             if !home.chests.is_empty() {
                 mb.cuboid(
-                    vec3(x + 0.55, y - 0.05, z + 0.25),
+                    vec3(x + 0.55 * s, y - 0.05, z + 0.25),
                     vec3(0.3, 0.28, 0.24),
                     Color::from_rgba(214, 170, 60, 255),
                 );
             }
+        }
+        // Market places: where people remember trading going well (A.33).
+        for (pos, score) in self.market_places() {
+            let (x, z) = (pos.x as f32 + 0.5, pos.y as f32 + 0.5);
+            let y = self.view3d.height_at(x, z).max(0.0);
+            let size = (1.2 + 0.15 * score.sqrt()).min(2.6);
+            mb.cuboid(
+                vec3(x, y - 0.05, z),
+                vec3(size, 0.1, size),
+                Color::from_rgba(186, 180, 168, 255),
+            );
+            let stalls = ((score / 3.0) as usize).clamp(1, 4);
+            let awnings = [
+                Color::from_rgba(220, 60, 60, 255),
+                Color::from_rgba(240, 200, 60, 255),
+                Color::from_rgba(70, 150, 220, 255),
+                Color::from_rgba(90, 180, 90, 255),
+            ];
+            for k in 0..stalls {
+                let ang = k as f32 / stalls as f32 * std::f32::consts::TAU + 0.4;
+                let (sx, sz) = (x + ang.cos() * size * 0.32, z + ang.sin() * size * 0.32);
+                mb.cuboid(
+                    vec3(sx, y + 0.05, sz),
+                    vec3(0.3, 0.3, 0.3),
+                    Color::from_rgba(130, 90, 60, 255),
+                );
+                mb.cone(
+                    vec3(sx, y + 0.35, sz),
+                    0.32,
+                    0.18,
+                    4,
+                    std::f32::consts::FRAC_PI_4,
+                    awnings[k % 4],
+                );
+            }
+        }
+        // Landmarks at the centre of villages and towns.
+        for st in &self.sim.settlements.tracked {
+            use accrete_core::simulation::settlement::SizeClass;
+            let tall = match st.class {
+                SizeClass::Village => 2.2,
+                SizeClass::Town => 3.6,
+                _ => continue,
+            };
+            let (x, z) = (st.centre.0 + 0.5, st.centre.1 + 0.5);
+            let y = self.view3d.height_at(x, z).max(0.0);
+            mb.cuboid(
+                vec3(x, y - 0.1, z),
+                vec3(0.6, tall, 0.6),
+                Color::from_rgba(205, 198, 185, 255),
+            );
+            mb.cone(
+                vec3(x, y + tall - 0.1, z),
+                0.55,
+                0.9,
+                4,
+                std::f32::consts::FRAC_PI_4,
+                Color::from_rgba(70, 90, 130, 255),
+            );
         }
         let skin = Color::from_rgba(232, 196, 160, 255);
         for a in &self.sim.agents {

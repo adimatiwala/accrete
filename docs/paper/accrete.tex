@@ -39,11 +39,12 @@ payoff-biased learning in a deterministic belief-driven agent society}
 
 \begin{abstract}
 \noindent
-We study the emergence of social and economic structure in \emph{Accrete}, a bit-reproducible agent-based model in which about one hundred founders, and their descendants, act only on what they have perceived and remember. Households, hamlets, trails, barter and prices are never scripted; every rule is one agent's preference, perception or ability. We report four results, each from paired multi-seed experiments with explicit uncertainty.
+We study the emergence of social and economic structure in \emph{Accrete}, a bit-reproducible agent-based model in which about one hundred founders, and their descendants, act only on what they have perceived and remember. Households, hamlets, trails, barter and prices emerge from rules for individual preferences, perceptions and abilities. We report four paired multi-seed results and an exploratory factorial follow-up.
 \textbf{(i)}~A Sobol' global sensitivity analysis shows that spatial aggregation is \emph{ecologically} determined: food regrowth and the land-perception threshold carry total-order indices of $0.75$ and $0.22$ for the Clark--Evans ratio, while the sociability and kin preferences, motives added to produce aggregation, carry $0.02$ and $0.03$.
 \textbf{(ii)}~Introducing a durable crafted good (tools) multiplies barter about tenfold, grows the monthly trade network from $33$ to $374$ distinct pairs, and raises household wealth inequality (Gini $0.33\!\to\!0.39$, non-overlapping intervals).
 \textbf{(iii)}~A division of labour does \emph{not} emerge, under increasing returns to crafting or under stone scarcity. Scarcity suppresses the tool economy rather than concentrating it, which is consistent with Smith's dictum that the division of labour is limited by the extent of the market, here the rate of co-located encounters.
 \textbf{(iv)}~Payoff-biased social learning has no effect on trait geography in the baseline economy, where payoffs depend on location rather than behaviour. Once tools make payoffs trait-sensitive, the \emph{same} learning rule raises spatial autocorrelation of all four personality traits ($\Delta I \in [+0.07, +0.12]$, $n=15$ paired seeds, all surviving Holm correction), without changing population, trade or inequality. In this model production does not merely add wealth: it creates the conditions under which cultural transmission becomes visible.
+\textbf{(v)}~Remembered trading places concentrate exchanges, and incentives for shared roads increase paving. In three paired worlds the joint treatment raises late-run trade per person by $37\,\%$ while trade per world-day falls by $21\,\%$ and tracked residential groups shrink. With faster food regrowth, shared roads increase village-days in all three worlds through day 400.
 \end{abstract}
 
 \tableofcontents
@@ -65,7 +66,7 @@ Accrete adopts a strict constructive discipline (Section~\ref{sec:principles}): 
 \item A fully specified, deterministic, cross-platform bit-identical model with a conservation ledger and a belief/truth separation enforced in code (Sections~\ref{sec:model}--\ref{sec:repro}).
 \item An \emph{observatory} of measurement-only statistics (spatial point pattern, spatial autocorrelation of traits, inequality, trade-network topology, specialisation) that agents can never read (Section~\ref{sec:measure}).
 \item A statistical protocol for stochastic simulators: paired seeds, $t$-intervals, Saltelli--Jansen Sobol' indices with bootstrap intervals, and a \emph{noise share} that flags indices dominated by seed noise (Section~\ref{sec:stats}).
-\item Four substantive results (Section~\ref{sec:results}), two of them initially null and then resolved by a theoretically motivated intervention.
+\item Paired experiments on ecological aggregation, trade, specialisation and culture, including a factorial test that distinguishes commercial activity from residential growth (Section~\ref{sec:results}).
 \end{enumerate}
 
 %=====================================================================
@@ -317,7 +318,7 @@ on & on & 0.06 & \textbf{779} {\scriptsize[602, 956]} & \textbf{40} & 0.025 & 0.
 
 Tools raise barter about tenfold at both food levels and grow the network more than tenfold (Table~\ref{tab:tools}). Without a good that is valued differently by different agents, \eqref{eq:barter} has few gains to exploit; with tools, it has many. Inequality rises with tools, and partly even without trade, because tool holders gather $1.5\times$ faster and convert that advantage into stores. Price beliefs settle into a dispersed but correlated distribution (coefficient of variation $\approx0.36$): neither a single market price nor independent guesses.
 
-\subsection{E2b: no division of labour, because the market is too small}
+\subsection{E2b: no division of labour under resource or skill asymmetry}
 
 \begin{table}[h]
 \centering\small
@@ -342,7 +343,7 @@ We predicted that either intervention would produce specialists. Neither did (Ta
 \item Increasing returns raise the crafter share about $2.5\times$, but it stays below $1\,\%$ of adults, and overall specialisation \emph{falls}, because the few long-practised crafters pull the mean vector toward crafting.
 \item Scarce stone does not create stone or tool specialists. It shrinks the whole tool economy: tool holders fall from $46\,\%$ to $9\,\%$, and trade and inequality fall with them.
 \end{itemize}
-The binding constraint is not the production technology but \emph{finding a counterparty}. Barter happens only between co-located agents, every six ticks, and agents keep no memory of who sells what. In Smith's terms~\cite{smith1776}, the division of labour is limited by the extent of the market, and here the market extends exactly as far as an agent's daily encounters. This makes a sharp, testable prediction: a perceptual or mnemonic channel for ``who has what'' (memory of past trading partners and their goods, or a meeting place that agents learn to visit) should produce specialisation where technology alone did not.
+One possible constraint is \emph{finding a counterparty}. Barter requires close contact on scheduled trade ticks, and these agents keep no memory of who sells what. In Smith's terms~\cite{smith1776}, the extent of the market might limit the division of labour. This gives a testable prediction that easier ways to arrange repeat encounters could yield specialisation where technology alone did not. Section~\ref{sec:cities} tests a place-based version of that channel.
 
 \subsection{E5: production creates the conditions for culture}
 
@@ -405,6 +406,42 @@ Tools make payoffs trait-sensitive. Diligence and caution shape how agents accum
 
 An exploratory increase in hamlets under culture without tools ($+0.8$, 5 seeds) did not replicate under tools ($-0.7$ {\scriptsize[$-1.7$, $+0.2$]}, 15 seeds) and is not claimed.
 
+\subsection{E2c: trading places, shared roads, and residential growth}
+\label{sec:cities}
+E2b suggested that the lack of repeated, discoverable encounters might impede a division of labour. We test one channel for arranging such encounters. Traders remember the location of their own successful barters, hear discounted reports of others' best locations, and may travel there or value a nearby home. The road intervention adds to a builder's private and household gains an estimate of time saved by other travellers. The estimate comes from trail wear observed locally or remembered from an earlier visit. The trading, construction, and settlement-classification rules are shared by all arms.
+
+The two interventions form a $2\times2$ design with tools enabled in all arms. We run each arm on seeds 1--3 for 1,000 simulated days. For each seed we summarise the final 100 days and compute paired arm differences and the interaction. The descriptive range is across seeds. The 100 days are repeated observations within a seed. A separate exploratory run crosses the same arms at 50\% faster food regrowth through day 400 and compares that horizon to the main experiment.
+
+We distinguish the volume of trade, its spatial concentration, and residential growth. Trade volume is measured per 1,000 person-days. For $N\ge2$ trades in a trailing 30-day window, with $n_x$ recorded on tile $x$, concentration is
+\[
+  C = \frac{\sum_x n_x(n_x-1)}{N(N-1)}.
+\]
+This is the fraction of ordered pairs of distinct trades that occur on the same tile. The correction removes the self-pairs that otherwise raise the observed concentration when trading volume is low. Residential growth is measured by the number of residents in the largest tracked group and days with a village or town, under the original persistence and size criteria. The protocol and analysis script are in \texttt{docs/research/CITIES.md}.
+
+\begin{table}[ht]
+\centering\small
+\caption{E2c at default food regrowth. Means across three matched worlds over days 901--1,000. Village-days count days with at least one village over the full run. Largest group includes candidates.}
+\label{tab:cities}
+\begin{tabular}{lrrrr}
+\toprule
+Outcome & Control & Markets & Roads & Both \\
+\midrule
+Trades per 1,000 person-days & 73.4 & 79.5 & 94.1 & 100.4 \\
+Trades per world-day & 61.3 & 50.5 & 84.5 & 48.3 \\
+Distinct trades on same tile (pair \%) & 0.27 & 1.29 & 0.18 & 1.23 \\
+Road tiles & 5.1 & 9.1 & 33.6 & 24.0 \\
+Specialisation $\Sigma$ & 0.022 & 0.018 & 0.024 & 0.019 \\
+Residents in largest group & 40.0 & 29.2 & 35.4 & 30.5 \\
+Population & 830.6 & 637.6 & 896.9 & 479.3 \\
+Village-days & 70 & 0 & 19 & 0 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Market memory raises the chance that two trades use the same tile by 0.90--1.18 percentage points across seeds. Shared roads alone add 18.4--43.7 road tiles. With both on, each seed has more trades per person, fewer trades per world-day, and a smaller largest residential group (Table~\ref{tab:cities}). The largest cluster contains a greater share of a smaller population. The treatment provides no consistent gain in specialisation. Around $13\,\%$ of agent-hours are assigned to market goals in the combined arm. The observed rest-goal share falls as the food-gathering-goal share rises. These changes do not isolate the cause of the demographic effect, because the market switch bundles memory, trips and home choice.
+
+With default regrowth, every arm has zero village-days through day 400. With regrowth raised by $50\,\%$, village-days rise to $(77,33,27)$ in control and $(172,78,36)$ with shared roads. In the combined arm only one seed records any village-days (34). The combined arm's trade rate rises to 143.6 per 1,000 person-days and exceeds the sum of the individual intervention effects by 7.1--26.2 across seeds. One higher-food control reaches the population cap. The dependence on food supply is an exploratory result within this model.
+
 %=====================================================================
 \section{Discussion}
 
@@ -412,27 +449,28 @@ An exploratory increase in hamlets under culture without tools ($+0.8$, 5 seeds)
 \begin{enumerate}
 \item \textbf{Ecology} sets how many people there are and how they cluster (E1).
 \item \textbf{Production technology} sets whether exchange has gains, and therefore the density of the social network and the level of inequality (E2).
-\item The \textbf{extent of encounters} bounds the division of labour (E2b).
+\item Despite more exchange, none of the tested changes produces substantial \textbf{division of labour} (E2b, E2c). Access to specific trading partners remains a separate hypothesis.
 \item \textbf{Culture} becomes visible only once production makes behaviour matter to payoff (E5).
+\item \textbf{Commercial clustering and residential growth} can diverge. The food supply conditions which transport gains coincide with village persistence (E2c).
 \end{enumerate}
 Social preferences sit at the bottom of the variance budget throughout. This ordering echoes materialist accounts in archaeology and cultural ecology, but here it is derived, not assumed: none of these dependencies is written into any rule.
 
-\paragraph{Why the nulls matter.} Two hypotheses (H2 specialisation, H5 culture) failed in their first form, and in both cases the failure pointed to a precise missing condition. The second form of H5 then succeeded. A model that cannot fail cannot teach, and principle P1 (motives, never outcomes) is what makes these failures informative.
+\paragraph{Why the nulls matter.} H5 first failed and then succeeded after tools made observed payoff more sensitive to behaviour. H2 remains unresolved. The place-memory intervention shows that concentrated exchange can coexist with low specialisation under the tested production rules. Remembered partners and differentiated production inputs give different predictions we can test independently.
 
 \paragraph{Limitations.}
 \begin{itemize}
 \item The pilot Sobol' study uses $N=32$ and 2 seeds; first-order indices are not resolved, and the noise share is high for foraging radius and Moran's $I$.
-\item Population is about $500$, so ``hamlets'' are tens of people, and claims about towns or states are out of scope.
+\item Settlement size classes use fixed model thresholds, and no E2c arm produced a town. The E2c factorial uses only three fixed seeds. The higher-food control that reaches the population cap limits interpretation of that regime.
 \item Parameters are plausible but not calibrated against an archaeological record.
 \item The mechanism proposed for E5 (trait-sensitive payoffs) is consistent with the data but not isolated. A direct test would log the regression slope of $r_i$ on $\boldsymbol\tau_i$ with and without tools.
 \end{itemize}
 
 \paragraph{Next experiments.}
 \begin{enumerate}
-\item \textbf{Market extent:} give agents memory of past partners' surplus goods, and test whether $\Sigma$ rises (the Smithian prediction).
+\item \textbf{Market extent:} distinguish remembered partners, travel and waiting costs, and the bias toward homes near trading places. Test whether partner memory raises $\Sigma$ when these other costs and preferences are held fixed.
 \item \textbf{Payoff--trait slope:} measure $\partial r/\partial\boldsymbol\tau$ directly and show that the culture effect scales with it.
 \item \textbf{A full Sobol' study} at $N\ge128$ with 5 seeds, adding the tools and culture parameters.
-\item \textbf{A phase diagram} of hamlet formation over $(\rho, \text{site food})$, to locate the threshold implied by $S_T\gg S_1$.
+\item \textbf{A phase diagram} over total food supply and its spatial concentration, to distinguish a population effect from a change in residential aggregation.
 \end{enumerate}
 
 %=====================================================================
@@ -453,6 +491,11 @@ accrete sweep --set tools.enabled=true \
    --param skills.practice_max=0.3,1.0 --seed 1-5 --days 300          # E2b
 accrete sweep --set tools.enabled=true --param culture.enabled=false,true \
    --seed 1-15 --days 300                                             # E5
+accrete sweep --set tools.enabled=true \
+   --param markets.enabled=false,true \
+   --param infrastructure.public_weight=0,1 \
+   --seed 1-3 --days 1000 --jobs 6 -o results/cities_a33              # E2c
+python docs/research/cities_analysis.py results/cities_a33
 \end{verbatim}
 \end{small}
 Every run writes a manifest, and \texttt{accrete reproduce <manifest>} verifies its final state hash.

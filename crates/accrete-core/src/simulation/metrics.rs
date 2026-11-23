@@ -106,6 +106,16 @@ pub struct DailyMetrics {
     pub wealth_gini: f32,
     /// Share of homed people living in the largest home cluster (R = settlement radius).
     pub largest_cluster_share: f32,
+    /// Cities (A.33): residents of the largest tracked settlement, adults
+    /// heading to or waiting at a market, and distinct remembered trading
+    /// places with a score of at least 2 in anyone's memory.
+    pub largest_settlement: u32,
+    pub market_goers: u32,
+    pub market_places: u32,
+    /// Distinct proposer tiles and sum of squared trade shares by tile,
+    /// over the last 30 days. Both are zero when there are no trades.
+    pub trade_tiles_30d: u32,
+    pub trade_tile_hhi_30d: f32,
     /// Home clusters with at least two homes.
     pub clusters_2plus: u32,
     /// Mean distance (tiles) of today's home moves.
@@ -207,6 +217,11 @@ impl DailyMetrics {
             "disrupted_tiles",
             "wealth_gini",
             "largest_cluster_share",
+            "largest_settlement",
+            "market_goers",
+            "market_places",
+            "trade_tiles_30d",
+            "trade_tile_hhi_30d",
             "clusters_2plus",
             "mean_move_distance",
             "trade_pairs_30d",
@@ -303,6 +318,11 @@ impl DailyMetrics {
             self.disrupted_tiles.to_string(),
             format!("{:.4}", self.wealth_gini),
             format!("{:.4}", self.largest_cluster_share),
+            self.largest_settlement.to_string(),
+            self.market_goers.to_string(),
+            self.market_places.to_string(),
+            self.trade_tiles_30d.to_string(),
+            format!("{:.6}", self.trade_tile_hhi_30d),
             self.clusters_2plus.to_string(),
             format!("{:.3}", self.mean_move_distance),
             self.trade_pairs_30d.to_string(),

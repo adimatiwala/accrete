@@ -259,6 +259,7 @@ surplus_value = 0.05000000074505806
 [infrastructure]
 roads_enabled = true
 household_weight = 0.5
+public_weight = 0.0
 road_wood = 2.0
 road_stone = 2.0
 road_ticks = 4
@@ -290,6 +291,17 @@ price_gossip = 0.20000000298023224
 [culture]
 enabled = false
 rate = 0.05000000074505806
+
+[markets]
+enabled = false
+weight = 0.6000000238418579
+half_score = 3.0
+home_weight = 0.4000000059604645
+access_radius = 10
+decay_per_day = 0.029999999329447746
+slots = 8
+gossip = 0.5
+wait_ticks = 6
 
 [disruption]
 scripted = []

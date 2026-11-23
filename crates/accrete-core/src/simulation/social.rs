@@ -272,6 +272,7 @@ impl Simulation {
             let teller_price = teller.memory.tool_price;
             let teller_traits = teller.traits;
             let teller_return = teller.forage_rate;
+            let teller_spot = teller.memory.best_trade_spot().map(|s| (s.pos, s.score));
             if teller.memory.reciprocity(to_id) < 0.0 {
                 continue; // keep quiet with someone who treated me badly
             }
@@ -301,6 +302,13 @@ impl Simulation {
                 }
             }
             listener.stats.tips_received += learned;
+            // Talk of where trading goes well (A.33).
+            if let (true, Some((pos, score))) = (self.config.markets.enabled, teller_spot) {
+                let m = &self.config.markets;
+                listener
+                    .memory
+                    .hear_trade_spot(pos, score * m.gossip, tick, m.slots as usize);
+            }
             // Payoff-biased social learning (A.27): copy a little from someone
             // who says foraging goes better for them.
             if self.config.culture.enabled && teller_return > listener.forage_rate {
@@ -340,13 +348,24 @@ impl Simulation {
         let slots = sc.social_slots as usize;
         let (idp, idq) = (self.agents[p].id, self.agents[q].id);
         let (hp, hq) = (self.agents[p].home, self.agents[q].home);
+        let pos = self.agents[p].pos;
         self.trade_log
             .push(crate::simulation::emergence::TradeRecord {
                 tick,
                 a: idp,
                 b: idq,
+                pos,
                 cross_household: hp.is_none() || hp != hq,
             });
+        // Both remember where it went well (A.33).
+        if self.config.markets.enabled {
+            let spot_slots = self.config.markets.slots as usize;
+            for i in [p, q] {
+                self.agents[i]
+                    .memory
+                    .note_trade_spot(pos, 1.0, tick, spot_slots);
+            }
+        }
         let given = self.agents[p].inventory.take(o.give, o.give_qty);
         self.agents[q].inventory.put(o.give, given);
         let got = self.agents[q].inventory.take(o.get, o.get_qty);

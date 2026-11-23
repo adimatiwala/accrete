@@ -11,7 +11,7 @@ Where to look:
 - **`docs/DESIGN.md`**: a module-by-module map of `accrete-core`, plus the tick pipeline.
 - **`README.md`**: a quick start and the headline results table.
 
-**Status:** Weeks 1–4 are built, plus Phase 2 tooling: scarcity rerun (A.18), manifests/`reproduce`/seed ranges/parallel aggregates (A.19), parameter sweeps (A.20), cross-PR review fixes (A.21), and a SQLite run index with periodic state snapshots (A.22). The research program and its PR roadmap are in `docs/research/PROGRAM.md` (A.23). Sobol' sensitivity analysis is `sweep --sobol` (A.25). Still open in A.10: Parquet metrics, surrogates, PDPs.
+**Status:** Weeks 1–4 are built, plus Phase 2 tooling: scarcity rerun (A.18), manifests/`reproduce`/seed ranges/parallel aggregates (A.19), parameter sweeps (A.20), cross-PR review fixes (A.21), and a SQLite run index with periodic state snapshots (A.22). The research program and its PR roadmap are in `docs/research/PROGRAM.md` (A.23). Sobol' sensitivity analysis is `sweep --sobol` (A.25). Markets and shared roads are default-off research mechanisms (A.33). Still open in A.10: Parquet metrics, surrogates, PDPs.
 
 ## Commands
 
@@ -63,7 +63,7 @@ cargo run --release -p accrete-cli -- branch --load results/seed1_day100.snap.js
 cargo run --release -p accrete-cli -- experiments --seed 1 --days 100 -o results/emergence
 ```
 
-- **Experiment suite additions:** `experiments` also has `tools` (H2), `sharing` (H3) and `culture` (H5) arms from the research program (`docs/research/PROGRAM.md`).
+- **Experiment suite additions:** `experiments` also has `tools` (H2), `sharing` (H3) and `culture` (H5) arms from the research program (`docs/research/PROGRAM.md`), plus `markets`, `public_roads` and `cities` (both). The paired study and analysis script are in `docs/research/CITIES.md`. Use `--3d --config configs/cities.toml` to see these mechanisms in the viewer.
 - **`accrete` subcommands:** `world`, `run`, `branch`, `experiments`, `trace`, `diag`, `config` and `render`.
 - **Emergence suite:** `experiments` runs the Week 3 Day 5 ablations (trade / trails / selfish) and the scarcity levels (`scarcity40`, `scarcity20`: food regrowth ×0.4 / ×0.2 of the base) from a fresh world per seed. The control is shared; each intervention writes a per-day `control_vs_*_compare.csv`, and the suite writes `emergence_summary.csv`, whose columns are defined in one place (`SUMMARY_HEADER`): `trades_*` and `total_*` are run totals, the rest are final-day. `--only` selects a subset, for example `--only scarcity40,scarcity20`.
 - **Multi-seed runs:**
@@ -113,7 +113,7 @@ Cross-cutting ideas that take several files to see:
   - static terrain of tiles it knows;
   - its **own household** (residents, chests, crowding).
 
-  Everything else comes from memory "as last seen". Routes are planned with `AgentBelief` over known tiles only. New perception goes through `engine::observe`. Never read live world state for distant or other households' facts.
+  Everything else comes from memory "as last seen", including wear on distant trails for public-road decisions and trading places learned through meetings. Routes are planned with `AgentBelief` over known tiles only. New visual perception goes through `engine::observe`. Never read live world state for distant or other households' facts.
 - **Propose, then resolve.** During `propose`, the world is read-only and no agent sees another's choice, so processing order doesn't matter. Tie-breaking jitter is a stateless hash of `(agent, tick, option)` and draws no random numbers. Contested actions are settled in `resolve_*`:
   - gathering is split in proportion to each request;
   - household actions are handled in a `conflicts`-stream permutation;
@@ -159,7 +159,7 @@ Cross-cutting ideas that take several files to see:
 - **Debug-only settings stay out of hashes.** `sim.check_invariants` and `sim.event_log_capacity` are excluded from `Config::digest`, and `Config::differs_in_results` ignores them. Keep any new debugging-only setting out of both.
 - **Derived world data is not serialized.** The line-of-sight masks and the tile-to-homes index are rebuilt by `World::rebuild_derived`; the per-tile disruption index (`World::disruption_at`) is rebuilt from `Simulation::disruptions` by `DisruptionState::rebuild_index`. Use `World::enter_cost(p, …)`, not `movement::enter_cost(tile, …)`, wherever a disruption should apply, and `World::step_in_cost(from, to, …)` for an actual step (it lets an agent standing in a blocked area wade out; A* applies the same rule through `movement::entry_cost`). Any new derived structure must be rebuilt there too, or it will be missing in scenario worlds and after loading a snapshot.
 - **Goods vs resources:** `Resource::ALL` is the three *natural* resources (what tiles hold, regrow and agents remember); `Resource::GOODS` adds `Tools` (A.26). Inventory-level code (death transfers, deposits, trade, the ledger, conservation checks) must loop over `GOODS`; tile and memory code over `ALL`. The ledger's tools column counts crafted tools as `regrown` and worn tools as `construction`.
-- **Disabled mechanisms must be inert.** New mechanisms ship behind a default-off switch (`tools.enabled`, `culture.enabled`). With the switch off, every pre-existing metric column must be bit-identical to the previous build (compare `*_metrics.csv` from two binaries); the golden hashes still change through the config digest and new hashed fields. Derive new per-agent random quantities from stateless hashes (`hash::mix_words`), not new draws on an existing stream, or every later draw shifts.
+- **Disabled mechanisms must be inert.** New mechanisms ship behind a default-off switch (`tools.enabled`, `culture.enabled`, `markets.enabled`, `infrastructure.public_weight = 0`). With the switch off, every pre-existing metric column must be bit-identical to the previous build (compare `*_metrics.csv` from two binaries); the golden hashes still change through the config digest and new hashed fields. Derive new per-agent random quantities from stateless hashes (`hash::mix_words`), not new draws on an existing stream, or every later draw shifts.
 - **Line-cost memo:** `Agent::line_memo` caches believed line costs and is validated once per tick against exact copies of the memory it depends on (known count, changed tiles, disruptions). That is only sound because `travel_ticks` runs between `observe` and the end of `propose`, when memory is fixed. Calling it after memory changes within a tick (meetings, apply) needs a fresh validation, which you add in `LineMemo::validate`.
 - **Memory pools:** the 64 resource-memory slots are split by type (food 40, wood 16, stone 8). One shared pool let abundant wood push out every food memory, and agents starved next to food. Route disruptions have their own pool (`memory.disruption_slots`, default 1,024), separate from the 32 trail/road slots, for the same reason: a large flood must not crowd roads out of memory.
 

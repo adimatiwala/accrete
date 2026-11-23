@@ -65,10 +65,11 @@ pub enum GoalKind {
     ImproveTrail,
     ImproveShelter,
     Craft,
+    Market,
 }
 
 impl GoalKind {
-    pub const COUNT: usize = 15;
+    pub const COUNT: usize = 16;
     pub const ALL: [GoalKind; GoalKind::COUNT] = [
         GoalKind::Idle,
         GoalKind::Explore,
@@ -85,6 +86,7 @@ impl GoalKind {
         GoalKind::ImproveTrail,
         GoalKind::ImproveShelter,
         GoalKind::Craft,
+        GoalKind::Market,
     ];
 
     pub fn name(self) -> &'static str {
@@ -104,6 +106,7 @@ impl GoalKind {
             GoalKind::ImproveTrail => "improve-trail",
             GoalKind::ImproveShelter => "improve-shelter",
             GoalKind::Craft => "craft",
+            GoalKind::Market => "market",
         }
     }
 

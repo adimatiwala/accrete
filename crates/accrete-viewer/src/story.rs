@@ -88,6 +88,7 @@ pub enum Role {
     Forager,
     Builder,
     Crafter,
+    Trader,
     Explorer,
     Settler,
     Family,
@@ -95,10 +96,11 @@ pub enum Role {
 }
 
 impl Role {
-    pub const ALL: [Role; 7] = [
+    pub const ALL: [Role; 8] = [
         Role::Forager,
         Role::Builder,
         Role::Crafter,
+        Role::Trader,
         Role::Explorer,
         Role::Settler,
         Role::Family,
@@ -116,6 +118,7 @@ impl Role {
             | GoalKind::ImproveTrail
             | GoalKind::ImproveShelter => Role::Builder,
             GoalKind::Craft => Role::Crafter,
+            GoalKind::Market => Role::Trader,
             GoalKind::Explore => Role::Explorer,
             GoalKind::EstablishHome => Role::Settler,
             GoalKind::Reproduce => Role::Family,
@@ -128,6 +131,7 @@ impl Role {
             Role::Forager => "gathering food",
             Role::Builder => "building / gathering materials",
             Role::Crafter => "crafting tools",
+            Role::Trader => "going to market",
             Role::Explorer => "exploring",
             Role::Settler => "moving house",
             Role::Family => "starting a family",
@@ -140,6 +144,7 @@ impl Role {
             Role::Forager => Color::from_rgba(255, 170, 60, 255),
             Role::Builder => Color::from_rgba(190, 120, 70, 255),
             Role::Crafter => Color::from_rgba(80, 230, 255, 255),
+            Role::Trader => Color::from_rgba(255, 215, 80, 255),
             Role::Explorer => Color::from_rgba(255, 240, 90, 255),
             Role::Settler => Color::from_rgba(240, 110, 255, 255),
             Role::Family => Color::from_rgba(255, 90, 140, 255),

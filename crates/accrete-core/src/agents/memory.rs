@@ -57,6 +57,8 @@ pub struct ChangedTile {
     pub pos: Pos,
     pub path_level: PathLevel,
     pub seen_tick: u64,
+    #[serde(default)]
+    pub traffic: f32,
 }
 
 /// A route disruption the agent last saw on a tile (flood, landslide).
@@ -108,6 +110,18 @@ pub struct AgentMemory {
     /// traded tools or heard someone's rate.
     #[serde(default)]
     pub tool_price: f32,
+    /// Places where trading went well (A.33), best first is not guaranteed.
+    #[serde(default)]
+    pub trade_spots: Vec<TradeSpot>,
+}
+
+/// A remembered trading place: a score that grows with each trade there
+/// (or with what others say about it) and fades daily.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct TradeSpot {
+    pub pos: Pos,
+    pub score: f32,
+    pub seen_tick: u64,
 }
 
 /// Freshness in `(0, 1]`: `half_life / (half_life + age)`. Pure division, so
@@ -134,6 +148,7 @@ impl AgentMemory {
             social: Vec::new(),
             frequent: Vec::new(),
             tool_price: 0.0,
+            trade_spots: Vec::new(),
         }
     }
 
@@ -563,13 +578,21 @@ impl AgentMemory {
     /// Record a trail or road the agent sees. A tile that looks bare again is
     /// forgotten. Disruptions use [`note_disruption`], so a flood never
     /// crowds roads out of this pool.
-    pub fn note_changed(&mut self, pos: Pos, level: PathLevel, tick: u64, cap: usize) {
+    pub fn note_changed(
+        &mut self,
+        pos: Pos,
+        level: PathLevel,
+        traffic: f32,
+        tick: u64,
+        cap: usize,
+    ) {
         if let Some(i) = self.changed.iter().position(|c| c.pos == pos) {
             if level == PathLevel::None {
                 self.changed.remove(i);
             } else {
                 self.changed[i].path_level = level;
                 self.changed[i].seen_tick = tick;
+                self.changed[i].traffic = traffic;
             }
             return;
         }
@@ -580,6 +603,7 @@ impl AgentMemory {
             pos,
             path_level: level,
             seen_tick: tick,
+            traffic,
         };
         if self.changed.len() < cap {
             self.changed.push(e);
@@ -668,6 +692,14 @@ impl AgentMemory {
             .iter()
             .find(|c| c.pos == p)
             .map_or(PathLevel::None, |c| c.path_level)
+    }
+
+    /// Wear on a trail as last observed.
+    pub fn believed_traffic(&self, p: Pos) -> f32 {
+        self.changed
+            .iter()
+            .find(|c| c.pos == p)
+            .map_or(0.0, |c| c.traffic)
     }
 
     /// The route disruption the agent last saw on `p`.
@@ -763,6 +795,7 @@ impl AgentMemory {
         m.home_food_seen = parent.home_food_seen;
         m.home_room_seen = parent.home_room_seen;
         m.tool_price = parent.tool_price;
+        m.trade_spots = parent.trade_spots.clone();
         m
     }
 
@@ -800,6 +833,7 @@ impl StableHash for AgentMemory {
             c.pos.stable_hash(h);
             h.u8(c.path_level as u8);
             h.u64(c.seen_tick);
+            h.f32(c.traffic);
         }
         h.len(self.disruptions.len());
         for d in &self.disruptions {
@@ -827,6 +861,71 @@ impl StableHash for AgentMemory {
             h.f32(f.count);
         }
         h.f32(self.tool_price);
+        h.len(self.trade_spots.len());
+        for s in &self.trade_spots {
+            s.pos.stable_hash(h);
+            h.f32(s.score);
+            h.u64(s.seen_tick);
+        }
+    }
+}
+
+impl AgentMemory {
+    /// A trade happened at `pos`: strengthen (or remember) that place.
+    pub fn note_trade_spot(&mut self, pos: Pos, add: f32, tick: u64, slots: usize) {
+        if let Some(s) = self.trade_spots.iter_mut().find(|s| s.pos == pos) {
+            s.score += add;
+            s.seen_tick = tick;
+            return;
+        }
+        self.trade_spots.push(TradeSpot {
+            pos,
+            score: add,
+            seen_tick: tick,
+        });
+        self.trim_trade_spots(slots);
+    }
+
+    /// Someone spoke well of `pos`: remember it at least that well.
+    pub fn hear_trade_spot(&mut self, pos: Pos, score: f32, tick: u64, slots: usize) {
+        if let Some(s) = self.trade_spots.iter_mut().find(|s| s.pos == pos) {
+            s.score = s.score.max(score);
+            return;
+        }
+        self.trade_spots.push(TradeSpot {
+            pos,
+            score,
+            seen_tick: tick,
+        });
+        self.trim_trade_spots(slots);
+    }
+
+    fn trim_trade_spots(&mut self, slots: usize) {
+        while self.trade_spots.len() > slots {
+            let worst = self
+                .trade_spots
+                .iter()
+                .enumerate()
+                .min_by(|(_, a), (_, b)| a.score.total_cmp(&b.score).then(b.pos.cmp(&a.pos)))
+                .map(|(i, _)| i)
+                .expect("non-empty");
+            self.trade_spots.remove(worst);
+        }
+    }
+
+    /// Daily fading of trading places; forgotten below a small score.
+    pub fn decay_trade_spots(&mut self, keep: f32) {
+        for s in &mut self.trade_spots {
+            s.score *= keep;
+        }
+        self.trade_spots.retain(|s| s.score >= 0.05);
+    }
+
+    /// The best remembered trading place.
+    pub fn best_trade_spot(&self) -> Option<&TradeSpot> {
+        self.trade_spots
+            .iter()
+            .max_by(|a, b| a.score.total_cmp(&b.score).then(b.pos.cmp(&a.pos)))
     }
 }
 
@@ -919,7 +1018,7 @@ mod tests {
     fn floods_do_not_crowd_out_roads() {
         let mut m = AgentMemory::new(Dims::new(32, 32));
         let road = Pos::new(1, 1);
-        m.note_changed(road, PathLevel::Road, 0, 32);
+        m.note_changed(road, PathLevel::Road, 0.0, 0, 32);
         assert_eq!(m.believed_path(road), PathLevel::Road);
         // More disruptions than the old shared pool of 32.
         for i in 0..80 {
