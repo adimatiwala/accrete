@@ -297,6 +297,12 @@ impl Simulation {
 
     /// Advance one tick.
     pub fn step(&mut self) {
+        self.begin_tick();
+        self.finish_tick(&[]);
+    }
+
+    /// Prepare the local state on which all proposals for this tick are based.
+    pub(crate) fn begin_tick(&mut self) {
         let tick = self.tick;
         let n = self.agents.len();
 
@@ -349,10 +355,18 @@ impl Simulation {
                 );
             }
         }
+    }
 
+    /// Finish a prepared tick, substituting the supplied proposals in agent ID order.
+    pub(crate) fn finish_tick(&mut self, control: &[(u32, Candidate)]) {
+        let tick = self.tick;
+        let n = self.agents.len();
         // 3. Propose: score every agent's options in parallel (read-only),
         // then route and commit in agent order (A.32).
         let prepared = crate::simulation::parallel::map_indexed(n, self.threads, |i| {
+            if let Ok(index) = control.binary_search_by_key(&self.agents[i].id, |(id, _)| *id) {
+                return Prepared::Controlled(control[index].1.clone());
+            }
             self.propose_prepare(i, tick)
         });
         let mut intents = vec![Intent::Idle; n];
@@ -468,6 +482,16 @@ impl Simulation {
     fn propose(&mut self, i: usize, tick: u64, prepared: Prepared) -> Intent {
         let (fresh_rays, cands) = match prepared {
             Prepared::Rest => return Intent::Rest,
+            Prepared::Controlled(choice) => {
+                let chosen = if self.agents[i].pos == choice.target
+                    || self.ensure_route(i, choice.target, tick)
+                {
+                    choice.clone()
+                } else {
+                    Candidate::new(GoalKind::Idle, self.agents[i].pos)
+                };
+                return self.commit_proposal(i, tick, vec![choice], chosen);
+            }
             Prepared::Options { fresh, cands } => (fresh, cands),
         };
         if let Some(fc) = fresh_rays {
@@ -493,6 +517,16 @@ impl Simulation {
                 .expect("idle is always available")
         });
 
+        self.commit_proposal(i, tick, cands, chosen)
+    }
+
+    fn commit_proposal(
+        &mut self,
+        i: usize,
+        tick: u64,
+        cands: Vec<Candidate>,
+        chosen: Candidate,
+    ) -> Intent {
         let agent = &mut self.agents[i];
         if !agent
             .goal
@@ -2314,6 +2348,7 @@ fn insert_sorted(v: &mut Vec<u32>, id: u32) {
 /// The read-only part of one agent's proposal (see `propose_prepare`).
 enum Prepared {
     Rest,
+    Controlled(Candidate),
     Options {
         fresh: Option<crate::agents::agent::FrontierCache>,
         cands: Vec<Candidate>,

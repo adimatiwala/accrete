@@ -5,6 +5,13 @@ members = [
     "crates/accrete-viz",
     "crates/accrete-cli",
     "crates/accrete-viewer",
+    "crates/accrete-py",
+]
+default-members = [
+    "crates/accrete-core",
+    "crates/accrete-viz",
+    "crates/accrete-cli",
+    "crates/accrete-viewer",
 ]
 
 [workspace.package]

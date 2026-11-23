@@ -92,6 +92,15 @@ jobs:
           cargo test --release -p accrete-viewer
       - name: Headless smoke run
         run: cargo run --release -p accrete-cli -- run --seed 1 --days 30 --every 10 --check -o results
+      - uses: actions/setup-python@v5
+        if: needs.changes.outputs.core != 'false'
+        with:
+          python-version: '3.11'
+      - name: Test the Gymnasium adapter
+        if: needs.changes.outputs.core != 'false'
+        run: |
+          python -m pip install -e "./crates/accrete-py[test]"
+          python -m pytest crates/accrete-py/tests
 
   ci-result:
     needs: [changes, test]

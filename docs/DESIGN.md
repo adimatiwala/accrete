@@ -24,6 +24,7 @@ This file is a map of where things are.
 | `simulation/snapshot.rs` | Save and load the full state as versioned JSON, with a state-hash check on load; `set_config` for intervention branches. |
 | `simulation/settlement.rs`, `emergence.rs`, `metrics.rs`, `events.rs` | Measurement only (agents never read these): settlements, clustering, depletion, specialisation, trade networks and locations, daily metrics, events and the resource ledger. |
 | `scenario.rs` | Loader for the hand-built TOML worlds in `tests/scenarios/`. |
+| `rl.rs`, `rl/household.toml` | Seeded household benchmark, bounded local action and observation contract, and evaluator score. |
 
 ## Tick pipeline
 
@@ -36,3 +37,9 @@ This file is a map of where things are.
 7. **Meetings:** among the survivors, sharing, then barter. The dead never trade or share.
 8. **Newborns join;** they act from the next tick.
 9. **Daily phase:** weather, regrowth, spoilage, decay, crowding, trails and roads, settlements, metrics.
+
+The RL environment prepares a tick through observation and home planning,
+exposes a local frame per controlled adult, then substitutes their proposals.
+Routing, contested actions, needs, barter, and weather run through the regular
+engine path. The `accrete-py` crate trains single-adult policies via Gymnasium
+and can run a learned policy for every resident in the playback viewer. [Install and train](../crates/accrete-py/README.md)
