@@ -35,12 +35,13 @@ CI (`.github/workflows/ci.yml`) runs on pull requests (including when a PR's bas
 4. **debug** tests for `accrete-core`, which must match the same golden hashes
 5. a viewer build and the viewer's tests (`cargo test --release -p accrete-viewer`)
 6. a headless smoke run: `cargo run --release -p accrete-cli -- run --seed 1 --days 30 --every 10 --check -o results`
+7. build the Python adapter and run its Gymnasium tests when core or Python code changes
 
 **Path filtering.** A `changes` job runs `.github/scripts/ci-changes.sh BASE HEAD` to decide what is needed:
 - **Docs only** (`*.md`, `docs/`, `.claude/`, the PR template, `.gitignore`): the Rust job is skipped.
 - **`accrete-cli` only:** step 4 (debug tests) and step 5 (viewer build and tests) are skipped.
 - **`accrete-viz` or `accrete-viewer` only:** step 4 is skipped.
-- **Anything else,** including core, `configs/`, `tests/`, the toolchain, dependencies, `.gitattributes`, CI files, and **any path the script doesn't recognise**: everything runs.
+- **Anything else,** including core, the Python adapter, `configs/`, `tests/`, the toolchain, dependencies, `.gitattributes`, CI files, and **any path the script doesn't recognise**: everything runs.
 
 Pushes to `main` and manual runs always run everything. The `ci-result` job always reports, and treats a skipped Rust job as a pass, so it is the one check to require in branch protection. When you add a new crate or a new kind of file, give it a category in the script; otherwise it falls back to running everything.
 - **The filter is fail-safe:** everything runs if the base can't be resolved, if `git diff` fails, if the diff is empty, or if the step's outputs are missing. Renames count as both their source and their destination.
@@ -87,11 +88,12 @@ cargo run --release -p accrete-cli -- experiments --seed 1 --days 100 -o results
 
 ## Architecture
 
-Four crates:
+Four Rust simulator crates and an optional Python extension:
 - **`accrete-core`:** the whole simulation. It has no graphics or OS-specific code, and its only dependencies are `rand_chacha`, `serde`, `serde_json` and `toml`.
 - **`accrete-viz`:** overlay colours, shared so that both front ends draw identical pictures.
 - **`accrete-cli`:** the headless `accrete` binary, built on `clap`, `png` and bundled `rusqlite` (run index).
 - **`accrete-viewer`:** the macroquad viewer.
+- **`accrete-py`:** the PyO3 and Gymnasium adapter for the household benchmark. The default Cargo build uses the simulator crates. Install the Python package with `python -m pip install -e "./crates/accrete-py[train,test]"` and run `python -m pytest crates/accrete-py/tests`.
 
 Both front ends depend on `core` and `viz`, and nothing depends on them.
 
@@ -105,6 +107,8 @@ Both front ends depend on `core` and `viz`, and nothing depends on them.
 7. meetings: sharing and barter, among survivors only
 8. newborns join
 9. the daily phase, on the last tick of each day
+
+The RL task prepares local frames with `begin_tick`, then `finish_tick` substitutes selected proposals in agent ID order. The Gymnasium task controls one adult, and `python -m accrete_rl.play` uses a checkpoint for every resident. Normal `step` calls both stages with the native policies for everyone. The benchmark keeps reward and evaluator metrics out of its local observation.
 
 Cross-cutting ideas that take several files to see:
 

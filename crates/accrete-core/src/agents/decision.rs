@@ -100,7 +100,7 @@ pub struct Candidate {
 }
 
 impl Candidate {
-    fn new(kind: GoalKind, target: Pos) -> Self {
+    pub(crate) fn new(kind: GoalKind, target: Pos) -> Self {
         Self {
             kind,
             target,

@@ -93,5 +93,12 @@ Appendix A.9 of `accrete.md` discusses why, and what to try next.
 The [trading places and shared roads study](docs/research/CITIES.md) tests
 whether more exchanges translate into more concentrated trade or larger settlements.
 
+## Train an agent
+
+[`AccreteHousehold-v0`](crates/accrete-py/README.md) is a Gymnasium task for
+foraging, storing reserves, and visiting remembered markets through a drought.
+The package includes parallel Maskable PPO training, resumable checkpoints,
+and fixed-seed evaluation against random and reserve-and-forage baselines.
+
 Performance on one laptop core: about 945 ticks/s with 100 agents, and about 260–290
 ticks/s with 500–600 agents (300 days in about 25–30 s).

@@ -1,5 +1,11 @@
 /target
 /results
+/.venv
+__pycache__/
+.pytest_cache/
+/crates/accrete-py/python/accrete_rl/*.pyd
+/crates/accrete-py/python/accrete_rl/*.pdb
+/crates/accrete-py/python/accrete_rl/*.so
 *.snap.json
 
 # Claude Code personal settings (team settings live in .claude/settings.json)

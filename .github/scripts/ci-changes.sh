@@ -44,7 +44,7 @@ while IFS= read -r -d '' f; do
     # Simulation core and everything it reads in tests: full run. Anything
     # under crates/ is code, including a crate's README (it may be compiled
     # into doc tests), so these come before the docs patterns.
-    crates/accrete-core/* | configs/* | tests/*)
+    crates/accrete-core/* | crates/accrete-py/* | configs/* | tests/*)
       rust=true core=true viewer=true ;;
     # Front ends: they cannot change simulation results.
     crates/accrete-cli/*)

@@ -1,0 +1,73 @@
+name = "household-market"
+map = """
+.................
+.................
+.ttttttttttttttt.
+...ff..h.h..ff...
+.................
+....f.......f....
+.................
+.................
+.................
+"""
+
+[[food]]
+at = [4, 4]
+amount = 10.0
+capacity = 23.0
+
+[[food]]
+at = [5, 5]
+amount = 8.0
+capacity = 17.0
+
+[[food]]
+at = [12, 4]
+amount = 16.0
+capacity = 27.0
+
+[[food]]
+at = [13, 5]
+amount = 14.0
+capacity = 25.0
+
+[[wood]]
+at = [3, 3]
+amount = 24.0
+
+[[wood]]
+at = [13, 3]
+amount = 16.0
+
+[[home]]
+at = [3, 4]
+chests = [6.0]
+
+[[home]]
+at = [11, 4]
+
+[[agent]]
+at = [3, 4]
+home = 0
+food = 3.0
+
+[[agent]]
+at = [3, 4]
+home = 0
+food = 3.0
+
+[[agent]]
+at = [3, 4]
+home = 0
+food = 2.0
+
+[[agent]]
+at = [11, 4]
+home = 1
+food = 11.0
+tools = 2.0
+
+[[agent]]
+at = [12, 4]
+home = 1
+food = 5.0

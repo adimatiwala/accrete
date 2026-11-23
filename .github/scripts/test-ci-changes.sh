@@ -49,6 +49,7 @@ change cli "echo y >> crates/accrete-cli/src/main.rs";                  check "c
 change viewer "echo y >> crates/accrete-viewer/src/main.rs";            check "viewer only" "rust=true core=false viewer=true"
 change viz "echo y >> crates/accrete-viz/src/lib.rs";                   check "viz only" "rust=true core=false viewer=true"
 change core "echo y >> crates/accrete-core/src/lib.rs";                 check "core" "$ALL"
+change python "mkdir -p crates/accrete-py; echo y > crates/accrete-py/pyproject.toml"; check "Python adapter" "$ALL"
 change cfg "echo y >> configs/default.toml";                            check "config" "$ALL"
 change ci "echo y >> .github/workflows/ci.yml";                         check "CI file" "$ALL"
 change readme "echo y >> crates/accrete-core/README.md";                check "crate README is code" "$ALL"
