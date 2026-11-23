@@ -189,6 +189,7 @@ pub fn wants_shelter(agent: &Agent, home: Option<&Home>, cx: &Ctx) -> bool {
 /// `benefit = time_saved_per_crossing * (own + household_weight * sociability * household)`
 /// using the agent's and its housemates' frequent-tile counts (about the
 /// crossings in the last 30 days, taken as the expectation for the next 30),
+/// plus an optional estimate of other travellers from observed trail wear,
 /// and `cost = labour (less for diligent agents) + the materials' gathering time`.
 pub fn road_value(agent: &Agent, cx: &Ctx, p: Pos) -> (f32, f32) {
     let ic = &cx.config.infrastructure;
@@ -209,7 +210,19 @@ pub fn road_value(agent: &Agent, cx: &Ctx, p: Pos) -> (f32, f32) {
         .map(|o| o.memory.crossings_at(p))
         .sum::<f32>()
         * horizon;
-    let benefit = saved * (own + ic.household_weight * agent.traits.sociability * household);
+    let mut benefit = saved * (own + ic.household_weight * agent.traits.sociability * household);
+    // Wear is visible here and remembered for other tiles (A.33). Under
+    // steady use it is roughly crossings-per-day / (1 - decay).
+    if ic.public_weight > 0.0 {
+        let wear = if agent.pos == p || omniscient(cx.config) {
+            t.traffic
+        } else {
+            agent.memory.believed_traffic(p)
+        };
+        let per_30_days = wear * (1.0 - cx.config.trails.decay) * 30.0;
+        let others = (per_30_days - agent.memory.crossings_at(p)).max(0.0) * horizon;
+        benefit += saved * ic.public_weight * agent.traits.sociability * others;
+    }
     let cost = ic.road_ticks as f32 * (1.3 - 0.6 * agent.traits.diligence) + ic.road_material_ticks;
     (benefit, cost)
 }
@@ -738,6 +751,54 @@ pub fn evaluate(agent: &Agent, cx: &Ctx) -> Vec<Candidate> {
         },
     ));
 
+    // --- Visit a market (A.33) ----------------------------------------------
+    let mk = &c.markets;
+    if mk.enabled
+        && !juvenile
+        && hunger < eat_thr
+        && energy > 0.35
+        && !agent.memory.trade_spots.is_empty()
+    {
+        // Something to swap: food beyond a comfortable reserve, spare
+        // materials, spare tools; or something wanted that trading supplies.
+        let spare_food = ((food - 1.5 * reserve) / reserve.max(1.0)).clamp(0.0, 1.0);
+        let spare_materials = ((wood + stone - 4.0) / 4.0).clamp(0.0, 1.0);
+        let spare_tools = (agent.inventory.tools - c.tools.wanted).clamp(0.0, 1.0);
+        let want_tool = if c.tools.enabled && agent.inventory.tools < c.tools.wanted {
+            1.0
+        } else {
+            0.0
+        };
+        let motive = (spare_food + spare_materials + spare_tools + want_tool).min(2.0)
+            * (0.5 + 0.5 * t.sociability);
+        if motive > 0.0 {
+            for s in &agent.memory.trade_spots {
+                if !leash_ok(s.pos) {
+                    continue;
+                }
+                let draw = s.score / (s.score + mk.half_score);
+                let waited = if agent.goal.kind == GoalKind::Market
+                    && agent.goal.target == s.pos
+                    && agent.pos == s.pos
+                {
+                    (cx.tick - agent.goal.since) as f32 / mk.wait_ticks.max(1) as f32
+                } else {
+                    0.0
+                };
+                let tt = travel(s.pos);
+                let back = trip_home_from(s.pos);
+                out.push(
+                    Candidate::new(GoalKind::Market, s.pos)
+                        .term("market", mk.weight * draw * motive)
+                        .term("waited", -0.3 * waited * mk.weight)
+                        .term("travel", -tc * tt)
+                        .term("home trip", -tc * back)
+                        .eta(tt + mk.wait_ticks as f32),
+                );
+            }
+        }
+    }
+
     // --- Home: found, join, or move -----------------------------------------
     if !juvenile {
         if let Some(plan) = agent.home_plan {
@@ -1160,6 +1221,23 @@ impl JoinInfo {
     }
 }
 
+/// How well placed `site` is for trading (A.33): remembered places, each by
+/// its draw, fading linearly to nothing at `access_radius`; capped at 1.
+fn market_access(agent: &Agent, c: &Config, site: Pos) -> f32 {
+    let m = &c.markets;
+    let r = m.access_radius.max(1) as f32;
+    agent
+        .memory
+        .trade_spots
+        .iter()
+        .map(|s| {
+            let near = (1.0 - s.pos.chebyshev(site) as f32 / r).max(0.0);
+            near * s.score / (s.score + m.half_score)
+        })
+        .sum::<f32>()
+        .min(1.0)
+}
+
 /// Score a potential home site from the agent's own knowledge.
 ///
 /// - **Food:** perceived sustainable food (daily regrowth potential of known
@@ -1172,6 +1250,7 @@ impl JoinInfo {
 ///   sociable agents; a home crowded beyond the grace period costs extra.
 /// - **Storage:** a home with chests is worth more.
 /// - **Terrain:** hills and mountains are poor places to live.
+/// - **Markets:** access to remembered trading places when enabled.
 pub fn site_score(agent: &Agent, cx: &Ctx, site: Pos, join: Option<JoinInfo>) -> Option<f32> {
     let world = cx.world;
     let c = cx.config;
@@ -1200,6 +1279,10 @@ pub fn site_score(agent: &Agent, cx: &Ctx, site: Pos, join: Option<JoinInfo>) ->
         score += 0.1;
     }
     score += d.social_weight * agent.traits.sociability * (neighbours / 8.0).min(1.0);
+    // Market access (A.33): good trading places within reach.
+    if c.markets.enabled {
+        score += c.markets.home_weight * market_access(agent, c, site);
+    }
     // Kin ties: living near the home one grew up in.
     if let Some((_, birth_pos)) = agent.birth_home {
         if birth_pos.chebyshev(site) <= 3 {

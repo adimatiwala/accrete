@@ -1,0 +1,8 @@
+[tools]
+enabled = true
+
+[markets]
+enabled = true
+
+[infrastructure]
+public_weight = 1.0

@@ -13,16 +13,16 @@ This file is a map of where things are.
 | `geom.rs`, `inventory.rs` | Positions, 8-neighbourhoods, octile distance, Bresenham lines; weight-limited inventories. |
 | `world/` | `terrain` (elevation, moisture, biomes), `rivers` (priority-flood drainage), `resources` (fertility, placement, regrowth), `visibility` (169-bit line-of-sight masks), `movement` (MP costs), `spawn`, `validate`, `stats`. |
 | `agents/agent.rs` | Agent state: needs, traits, skills, goal, route, home, foraging returns. |
-| `agents/memory.rs` | Fixed-size memory: known tiles, resources (40/16/8), homes, changed tiles, social (reciprocity), frequent tiles. |
+| `agents/memory.rs` | Bounded memory of known terrain, resources, homes, paths (including their last observed wear), social contacts, frequent tiles and trading places. |
 | `agents/pathfinding.rs` | A* over known tiles with believed costs, plus a straight-line travel estimate. |
 | `agents/decision.rs` | Utility scoring of every option, with recorded terms; site scoring; reproduction motives; road and shelter value; material plans. |
 | `simulation/engine.rs` | The tick pipeline: observe, plan homes, propose, resolve, apply, deaths, meetings, births, daily. Also the observers for the random and omniscient baselines (`sim.agent_kind`). |
-| `simulation/social.rs` | Knowledge sharing and barter with reciprocity. |
+| `simulation/social.rs` | Knowledge sharing, including tips about trading places, and barter with reciprocity. |
 | `simulation/infrastructure.rs` | Road and shelter construction, and road upkeep. |
 | `simulation/weather.rs` | Random and scripted droughts, and optional seasons. |
 | `simulation/disruption.rs` | Scripted route disruptions (blocked or slowed tiles), started and ended in the daily phase; the authoritative state behind `World::disruption_at`. |
 | `simulation/snapshot.rs` | Save and load the full state as versioned JSON, with a state-hash check on load; `set_config` for intervention branches. |
-| `simulation/settlement.rs`, `emergence.rs`, `metrics.rs`, `events.rs` | Measurement only (agents never read these): settlements, clustering, depletion, specialisation, the daily metrics row, the event log, the resource ledger. |
+| `simulation/settlement.rs`, `emergence.rs`, `metrics.rs`, `events.rs` | Measurement only (agents never read these): settlements, clustering, depletion, specialisation, trade networks and locations, daily metrics, events and the resource ledger. |
 | `scenario.rs` | Loader for the hand-built TOML worlds in `tests/scenarios/`. |
 
 ## Tick pipeline

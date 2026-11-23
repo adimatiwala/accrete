@@ -36,6 +36,7 @@ pub struct Config {
     pub infrastructure: InfrastructureConfig,
     pub tools: ToolsConfig,
     pub culture: CultureConfig,
+    pub markets: MarketsConfig,
     pub disruption: DisruptionConfig,
     pub sim: SimConfig,
 }
@@ -100,6 +101,8 @@ impl Config {
             ("tools.price_learning", self.tools.price_learning),
             ("tools.price_gossip", self.tools.price_gossip),
             ("culture.rate", self.culture.rate),
+            ("markets.decay_per_day", self.markets.decay_per_day),
+            ("markets.gossip", self.markets.gossip),
             ("weather.daily_chance", self.weather.daily_chance),
             ("weather.severity_min", self.weather.severity_min),
             ("weather.severity_max", self.weather.severity_max),
@@ -108,6 +111,9 @@ impl Config {
             if !(0.0..=1.0).contains(&x) {
                 return Err(format!("{name} must be between 0 and 1, got {x}"));
             }
+        }
+        if self.markets.half_score == 0.0 {
+            return Err("markets.half_score must be positive".into());
         }
         let w = &self.world;
         if w.ocean_fraction + w.mountain_fraction + w.hill_fraction > 1.0 {
@@ -1001,6 +1007,46 @@ impl Default for SocialConfig {
     }
 }
 
+/// Markets: remembered trading places (A.33).
+///
+/// Each agent remembers where its trades happened (`slots` places, each with
+/// a score that grows by one per trade and decays by `decay_per_day`), and
+/// hears about a partner's best place in conversation (`gossip` of its
+/// score). An adult with goods to swap may visit a remembered place
+/// (`weight` × its draw `score / (score + half_score)`), with an age penalty
+/// scaled by `wait_ticks` once there; and values living within `access_radius` of good
+/// places when choosing a home (`home_weight`). Success draws visitors, and
+/// visitors make success likelier.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MarketsConfig {
+    pub enabled: bool,
+    pub weight: f32,
+    pub half_score: f32,
+    pub home_weight: f32,
+    pub access_radius: u32,
+    pub decay_per_day: f32,
+    pub slots: u32,
+    pub gossip: f32,
+    pub wait_ticks: u32,
+}
+
+impl Default for MarketsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            weight: 0.6,
+            half_score: 3.0,
+            home_weight: 0.4,
+            access_radius: 10,
+            decay_per_day: 0.03,
+            slots: 8,
+            gossip: 0.5,
+            wait_ticks: 6,
+        }
+    }
+}
+
 /// Payoff-biased social learning (A.27).
 ///
 /// When two agents talk (the same meeting in which they share where food
@@ -1083,6 +1129,10 @@ pub struct InfrastructureConfig {
     /// Weight on the household's crossings in the road-benefit rule
     /// (0 = strictly selfish agents).
     pub household_weight: f32,
+    /// Weight on *other people's* traffic over a trail tile (seen as how worn
+    /// it is) in the road-benefit rule, scaled by sociability (A.33). 0 keeps
+    /// roads a household matter.
+    pub public_weight: f32,
     pub road_wood: f32,
     pub road_stone: f32,
     pub road_ticks: u32,
@@ -1104,6 +1154,7 @@ impl Default for InfrastructureConfig {
         Self {
             roads_enabled: true,
             household_weight: 0.5,
+            public_weight: 0.0,
             road_wood: 2.0,
             road_stone: 2.0,
             road_ticks: 4,
@@ -1277,7 +1328,7 @@ mod tests {
         let ok = Config::default();
         assert_eq!(ok.validate(), Ok(()));
         type Breaks = fn(&mut Config);
-        let bad: [(&str, Breaks); 13] = [
+        let bad: [(&str, Breaks); 14] = [
             ("food_regrowth", |c| c.resources.food_regrowth = f32::NAN),
             ("food_regrowth", |c| {
                 c.resources.food_regrowth = f32::INFINITY
@@ -1296,6 +1347,7 @@ mod tests {
             ("min_mp", |c| c.movement.min_mp = 0),
             ("disruption_slots", |c| c.memory.disruption_slots = 0),
             ("time_cost", |c| c.decision.time_cost = f32::NAN),
+            ("markets.half_score", |c| c.markets.half_score = 0.0),
         ];
         for (what, f) in bad {
             let mut c = ok.clone();

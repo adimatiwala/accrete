@@ -1742,3 +1742,20 @@ Tried and reverted, with no measurable gain: index-permutation sorting of candid
 **Threads:** the count defaults to the machine's parallelism, capped at 8. `ACCRETE_THREADS` overrides it. The CLI sets it to 1 when `--jobs` already runs seeds in parallel. It is not state, so it is never saved or hashed.
 
 **Rule change:** CLAUDE.md rule 1 now allows parallelism inside one simulation only where it cannot change results, with this as the single sanctioned case.
+
+### A.33 Remembered trading places and shared roads
+
+This experiment asks whether reducing the cost of finding someone to trade with expands settlement size. The earlier tools experiment increased exchange without producing specialists (A.26 and A.29). Place memory makes some encounters easier to arrange and lets a household value living near them. Shared roads change the value of a trip without changing what agents know globally. The [research note](docs/research/CITIES.md) defines the four arms, the ecological comparison, and the reproducible analysis.
+
+| Mechanism | Implementation |
+|---|---|
+| Trading place memory | Both parties remember where a barter went well. Ordinary sharing can transmit the best remembered site, at a discount. Each agent has a bounded pool of sites with daily decay. |
+| Market choice | The agent weighs its surplus or demand for a tool, sociability, the remembered site's score, travel and return cost, and an age penalty once there. The usual meeting phase handles actual exchange. The site score for a home can include proximity to these remembered locations. |
+| Shared roads | An agent can value travel savings for other users of a trail in proportion to sociability and `infrastructure.public_weight`. Distant traffic comes from last-seen wear. The existing construction resolver still charges labour and materials. |
+| Measurement and viewer | The trade window records proposer positions, so exchange concentration can be measured independently of memories. The viewer shows remembered sites as stalls, paved roads as grey stone, and confirmed villages and towns with different towers. Homes scale with occupancy and shelter. |
+
+Markets default off and public road weight defaults to zero. No settlement classification, trade network metric, or global traffic map feeds into a normal agent's choices. Snapshot format 7 includes trading-place memory, last-seen trail wear, and trade location telemetry. The world golden is unchanged. State and snapshot goldens change through the config and the new state and telemetry fields.
+
+**Results.** In the 1,000-day factorial with tools on (three matched worlds), shared roads alone increased late-run road tiles from 5.1 to 33.6. Markets alone raised the chance that two trades used the same tile from 0.27% to 1.29%. Both mechanisms together raised trades per 1,000 person-days from 73.4 to 100.4, even as trades per world-day fell from 61.3 to 48.3 and the largest tracked group shrank in all three seeds. No default-food market run reached village size and persistence. In a separate 400-day run with 50% faster food regrowth, shared roads alone increased village-days on each seed, and one combined run recorded 34 village-days. One high-food control hit the population cap. These are results for the model and chosen parameter settings. See the [research note](docs/research/CITIES.md) for paired effects, denominators, and alternatives to test.
+
+**Verification.** With both mechanisms off, all 103 pre-existing metrics match the prior executable across 900 daily rows (seeds 1–3, 300 days). Enabled scenarios check completed-trade memory and exact snapshot continuation, and show that changing wear away from an agent has no immediate effect on its decision. The parallel-state test includes both mechanisms. A 30-day run with invariant checks and both mechanisms enabled reproduced its recorded hash.

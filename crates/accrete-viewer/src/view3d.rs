@@ -272,6 +272,12 @@ impl View3D {
                 let i = z * w + x;
                 let rgb = colors[i];
                 let mut col = Color::from_rgba(rgb[0], rgb[1], rgb[2], 255);
+                if biome_overlay
+                    && sim.world.tiles[i].path_level == accrete_core::world::PathLevel::Road
+                {
+                    // Paved: grey stone.
+                    col = Color::from_rgba(158, 152, 142, 255);
+                }
                 let p = [
                     vec3(x as f32, c(x, z), z as f32),
                     vec3(x as f32 + 1.0, c(x + 1, z), z as f32),

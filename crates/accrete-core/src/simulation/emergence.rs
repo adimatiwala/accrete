@@ -2,6 +2,7 @@
 
 use crate::agents::agent::Agent;
 use crate::config::TickRates;
+use crate::geom::Pos;
 use crate::world::{Home, World};
 
 /// Clark-Evans nearest-neighbour ratio `R = mean_nn / (0.5 / sqrt(density))`
@@ -231,12 +232,14 @@ pub fn morans_i(
     Some(((n as f64 / wsum) * (num / var)) as f32)
 }
 
-/// One completed barter, kept for network measurement only.
+/// One completed barter, kept for measurement only.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct TradeRecord {
     pub tick: u64,
     pub a: u32,
     pub b: u32,
+    /// Proposer's tile at the time of exchange.
+    pub pos: Pos,
     /// The two traders lived in different homes (or at least one was homeless).
     pub cross_household: bool,
 }
@@ -250,17 +253,21 @@ pub struct TradeNetwork {
     pub degree_gini: f32,
     pub cross_household_share: f32,
     pub repeat_share: f32,
+    pub tiles: u32,
+    pub tile_hhi: f32,
 }
 
-/// Network statistics over trades with `tick >= since`.
+/// Network and location statistics over trades with `tick >= since`.
 pub fn trade_network(log: &[TradeRecord], since: u64) -> TradeNetwork {
     use std::collections::BTreeMap;
     let mut pairs: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+    let mut tiles: BTreeMap<Pos, u32> = BTreeMap::new();
     let mut cross = 0u32;
     let mut trades = 0u32;
     for r in log.iter().filter(|r| r.tick >= since) {
         let key = if r.a < r.b { (r.a, r.b) } else { (r.b, r.a) };
         *pairs.entry(key).or_insert(0) += 1;
+        *tiles.entry(r.pos).or_insert(0) += 1;
         trades += 1;
         cross += u32::from(r.cross_household);
     }
@@ -274,6 +281,13 @@ pub fn trade_network(log: &[TradeRecord], since: u64) -> TradeNetwork {
     }
     let degrees: Vec<f64> = degree.values().map(|&d| f64::from(d)).collect();
     let repeats: u32 = pairs.values().map(|&c| c - 1).sum();
+    let tile_hhi: f64 = tiles
+        .values()
+        .map(|&count| {
+            let share = f64::from(count) / f64::from(trades);
+            share * share
+        })
+        .sum();
     TradeNetwork {
         trades,
         pairs: pairs.len() as u32,
@@ -282,6 +296,8 @@ pub fn trade_network(log: &[TradeRecord], since: u64) -> TradeNetwork {
         degree_gini: gini(&degrees),
         cross_household_share: cross as f32 / trades as f32,
         repeat_share: repeats as f32 / trades as f32,
+        tiles: tiles.len() as u32,
+        tile_hhi: tile_hhi as f32,
     }
 }
 
@@ -300,23 +316,26 @@ mod observatory_tests {
 
     #[test]
     fn trade_network_counts_pairs_degrees_and_repeats() {
-        let r = |tick, a, b, cross| TradeRecord {
+        let r = |tick, a, b, x, cross| TradeRecord {
             tick,
             a,
             b,
+            pos: Pos::new(x, 0),
             cross_household: cross,
         };
         let log = [
-            r(1, 1, 2, true),
-            r(2, 2, 1, true),
-            r(3, 1, 3, false),
-            r(0, 4, 5, true),
+            r(1, 1, 2, 1, true),
+            r(2, 2, 1, 1, true),
+            r(3, 1, 3, 2, false),
+            r(0, 4, 5, 3, true),
         ];
         let n = trade_network(&log, 1);
         assert_eq!((n.trades, n.pairs, n.traders), (3, 2, 3));
         assert!((n.mean_degree - 4.0 / 3.0).abs() < 1e-6);
         assert!((n.repeat_share - 1.0 / 3.0).abs() < 1e-6);
         assert!((n.cross_household_share - 2.0 / 3.0).abs() < 1e-6);
+        assert_eq!(n.tiles, 2);
+        assert!((n.tile_hhi - 5.0 / 9.0).abs() < 1e-6);
         assert_eq!(trade_network(&log, 100), TradeNetwork::default());
     }
 }

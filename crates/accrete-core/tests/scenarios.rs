@@ -271,6 +271,30 @@ fn complementary_surpluses_trade() {
 }
 
 #[test]
+fn markets_learn_from_completed_trades_and_survive_snapshot() {
+    let mut c = config();
+    c.markets.enabled = true;
+    let sc = Scenario::load(&scenario_path("trade_complementary.toml")).unwrap();
+    let mut sim = sc.build(&c).unwrap();
+    sim.run(3);
+
+    let at = sim.trade_log.first().expect("completed trade").pos;
+    for trader in &sim.agents {
+        let spot = trader.memory.best_trade_spot().expect("remembered trade");
+        assert_eq!(spot.pos, at);
+        assert!(spot.score >= 1.0);
+    }
+
+    let mut resumed = Simulation::from_snapshot_json(&sim.snapshot_json()).unwrap();
+    assert_eq!(resumed.trade_log, sim.trade_log);
+    sim.run(30);
+    resumed.run(30);
+    assert_eq!(resumed.state_hash(), sim.state_hash());
+    assert_eq!(resumed.metrics, sim.metrics);
+    assert_eq!(resumed.trade_log, sim.trade_log);
+}
+
+#[test]
 fn identical_surpluses_do_not_trade() {
     let mut sim = load("trade_identical.toml");
     for _ in 0..24 {
@@ -335,6 +359,36 @@ fn selfish_agent_with_few_crossings_does_not_build() {
         sim.world.tile(Pos::new(2, 2)).path_level,
         accrete_core::world::PathLevel::Road
     );
+}
+
+#[test]
+fn public_road_benefit_uses_last_seen_wear_for_other_tiles() {
+    use accrete_core::agents::decision::{Ctx, road_value};
+    use accrete_core::simulation::engine::observe;
+
+    let mut c = config();
+    c.infrastructure.household_weight = 0.0;
+    c.infrastructure.public_weight = 1.0;
+    let sc = Scenario::load(&scenario_path("road_selfish_few.toml")).unwrap();
+    let mut sim = sc.build(&c).unwrap();
+    let tile = Pos::new(3, 2);
+    let benefit = |sim: &Simulation| {
+        let cx = Ctx {
+            world: &sim.world,
+            config: &sim.config,
+            rates: &sim.rates,
+            tick: sim.tick,
+            population_at_cap: false,
+            agents: &sim.agents,
+        };
+        road_value(&sim.agents[0], &cx, tile).0
+    };
+
+    let initial = benefit(&sim);
+    sim.world.tile_mut(tile).traffic += 100.0;
+    assert_eq!(benefit(&sim), initial);
+    observe(&mut sim.agents[0], &sim.world, &sim.config, &sim.rates, 1);
+    assert!(benefit(&sim) > initial);
 }
 
 #[test]

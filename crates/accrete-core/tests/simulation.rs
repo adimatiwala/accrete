@@ -725,12 +725,14 @@ fn fast_line_cost_matches_general() {
 
 /// Scoring proposals on several threads (A.32) must not change anything:
 /// the state after many ticks is identical for 1 and 7 threads, including
-/// with tools and culture on.
+/// with tools, culture, markets, and public roads on.
 #[test]
 fn thread_count_does_not_change_results() {
     let mut c = Config::default();
     c.tools.enabled = true;
     c.culture.enabled = true;
+    c.markets.enabled = true;
+    c.infrastructure.public_weight = 1.0;
     let run = |threads: usize| {
         let mut sim = Simulation::new(3, c.clone());
         sim.threads = threads;

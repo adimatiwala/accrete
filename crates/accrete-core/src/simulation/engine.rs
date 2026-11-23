@@ -584,6 +584,8 @@ impl Simulation {
             GoalKind::ImproveTrail => Intent::ImproveTrail,
             GoalKind::ImproveShelter => Intent::ImproveShelter,
             GoalKind::Craft => Intent::Craft,
+            // At the market: wait to meet people (meetings do the trading).
+            GoalKind::Market => Intent::Idle,
         }
     }
 
@@ -1263,11 +1265,17 @@ impl Simulation {
                         let Some(cost) = world.step_in_cost(a.pos, next, &c.movement) else {
                             // Blocked (e.g. a route disruption the agent had
                             // not seen): it now knows, and re-plans.
-                            let path = world.tile(next).path_level;
+                            let tile = world.tile(next);
+                            let wear = if c.infrastructure.public_weight > 0.0 {
+                                tile.traffic
+                            } else {
+                                0.0
+                            };
                             let d = world.disruption(next);
                             a.memory.note_changed(
                                 next,
-                                path,
+                                tile.path_level,
+                                wear,
                                 tick,
                                 c.memory.changed_slots as usize,
                             );
@@ -1726,6 +1734,9 @@ impl Simulation {
             a.forage_today_ticks = 0;
             a.memory
                 .daily_decay(c.social.reciprocity_decay_per_day, 1.0 - 1.0 / 30.0);
+            if c.markets.enabled {
+                a.memory.decay_trade_spots(1.0 - c.markets.decay_per_day);
+            }
             if a.pathology.idle_today > c.pathology.idle_ticks_per_day {
                 self.pathologies[3] += 1;
                 log_pathology(&mut self.pathology_log, tick, a.id, PathologyKind::Idle);
@@ -2101,7 +2112,13 @@ pub fn observe(a: &mut Agent, world: &World, c: &Config, r: &TickRates, tick: u6
                 home_slots,
             );
         }
-        a.memory.note_changed(p, t.path_level, tick, changed_slots);
+        let wear = if c.infrastructure.public_weight > 0.0 {
+            t.traffic
+        } else {
+            0.0
+        };
+        a.memory
+            .note_changed(p, t.path_level, wear, tick, changed_slots);
         a.memory
             .note_disruption(p, world.disruption(p), tick, a.pos, disruption_slots);
     }
@@ -2326,6 +2343,32 @@ impl Simulation {
         m.largest_cluster_share = sizes
             .first()
             .map_or(0.0, |s| s.1 as f32 / homed.max(1) as f32);
+        m.largest_settlement = self
+            .settlements
+            .tracked
+            .iter()
+            .map(|t| t.residents)
+            .max()
+            .unwrap_or(0);
+        m.market_goers = self
+            .agents
+            .iter()
+            .filter(|a| a.goal.kind == GoalKind::Market)
+            .count() as u32;
+        let mut places: Vec<Pos> = self
+            .agents
+            .iter()
+            .flat_map(|a| {
+                a.memory
+                    .trade_spots
+                    .iter()
+                    .filter(|s| s.score >= 2.0)
+                    .map(|s| s.pos)
+            })
+            .collect();
+        places.sort();
+        places.dedup();
+        m.market_places = places.len() as u32;
         m.clusters_2plus = sizes.iter().filter(|s| s.0 >= 2).count() as u32;
         m.mean_move_distance = if self.today.home_moves > 0 {
             (self.today.home_move_distance_sum / f64::from(self.today.home_moves)) as f32
@@ -2339,6 +2382,8 @@ impl Simulation {
         m.trade_degree_gini = net.degree_gini;
         m.trade_cross_household_share = net.cross_household_share;
         m.trade_repeat_share = net.repeat_share;
+        m.trade_tiles_30d = net.tiles;
+        m.trade_tile_hhi_30d = net.tile_hhi;
         let moran =
             |f: fn(&Agent) -> f32| em::morans_i(&self.world, &self.agents, 8, f).unwrap_or(0.0);
         m.moran_curiosity = moran(|a| a.traits.curiosity);

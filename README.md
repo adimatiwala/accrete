@@ -28,6 +28,8 @@ cargo build --release
 # Interactive viewer: Space run/pause, +/- speed, Tab overlays (try "depletion"),
 # click to inspect, H for help
 cargo run --release -p accrete-viewer -- --seed 1 --play
+# Market visits and shared roads in the 3D viewer
+cargo run --release -p accrete-viewer -- --seed 1 --day 300 --3d --config configs/cities.toml
 
 # Headless 300-day run: metrics CSV, death log, final map, and a timelapse
 # strip (terrain + depletion) in results/
@@ -63,7 +65,7 @@ cargo run --release -p accrete-cli -- world --seed 1,2,3
 
 Tests: `cargo test --release -p accrete-core`. This covers unit tests, the
 world-generation acceptance checks, determinism and golden hashes,
-conservation, population rules, droughts, and the 14 behavioural scenarios. To
+conservation, population rules, droughts, and behavioural scenarios. To
 re-bless the golden hashes deliberately, run `ACCRETE_BLESS=1 cargo test` and
 explain the change in the commit message.
 
@@ -80,7 +82,7 @@ explain the change in the commit message.
 - **Shelters:** crowded families pool wood and stone to upgrade their homes.
 - **Sharing:** knowledge of food spreads through meetings.
 
-There is no rule anywhere in the code for settlements, roads, or where anyone lives.
+Agents choose where to live and which trails to pave. Settlement detection observes the resulting homes.
 
 **Honest negatives** (valid results, per the spec):
 - Roads barely form under the spec's road-benefit rule.
@@ -88,6 +90,8 @@ There is no rule anywhere in the code for settlements, roads, or where anyone li
 - Barter happens, but only modestly.
 
 Appendix A.9 of `accrete.md` discusses why, and what to try next.
+The [trading places and shared roads study](docs/research/CITIES.md) tests
+whether more exchanges translate into more concentrated trade or larger settlements.
 
 Performance on one laptop core: about 945 ticks/s with 100 agents, and about 260–290
 ticks/s with 500–600 agents (300 days in about 25–30 s).
